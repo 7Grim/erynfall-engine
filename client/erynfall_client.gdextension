@@ -1,0 +1,8 @@
+; Erynfall Client GDExtension configuration
+[configuration]
+entry_symbol = "erynfall_client_init"
+symbol_prefix = "erynfall_client_"
+
+[libraries]
+linux.debug.x86_64 = "res://bin/liberynfall_client.linux.debug.x86_64.so"
+linux.release.x86_64 = "res://bin/liberynfall_client.linux.release.x86_64.so"

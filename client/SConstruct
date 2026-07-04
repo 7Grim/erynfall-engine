@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""
+SCons build script for Erynfall Client GDExtension.
+
+Usage:
+    scons                    # Build debug
+    scons target=release     # Build release
+"""
+
+import os
+import sys
+import subprocess
+
+# Paths
+_script_dir = os.getcwd()
+godot_cpp_dir = os.path.join(_script_dir, "godot-cpp")
+shared_dir = os.path.join(_script_dir, "..", "shared")
+
+# Determine target — map to godot-cpp's naming
+target = ARGUMENTS.get("target", "debug")
+# godot-cpp uses template_debug / template_release / editor
+godot_target = "template_debug" if target == "debug" else "template_release"
+
+# First, build godot-cpp if needed
+godot_cpp_lib = None
+if sys.platform == "linux":
+    arch = "x86_64"
+    godot_cpp_lib = os.path.join(godot_cpp_dir, "bin",
+        "libgodot-cpp.linux.{}.{}".format(godot_target, arch))
+
+if not os.path.exists(godot_cpp_lib):
+    print("Building godot-cpp ({})...".format(godot_target))
+    subprocess.check_call(["scons", "target=" + godot_target, "-j4"], cwd=godot_cpp_dir)
+
+# Now build our extension
+env = Environment()
+
+is_debug = target == "debug"
+
+if sys.platform == "linux":
+    arch = "x86_64"
+    env.Append(CCFLAGS=["-fPIC", "-std=c++20", "-g" if is_debug else "-O2"])
+    env.Append(CXXFLAGS=["-fPIC", "-std=c++20", "-g" if is_debug else "-O2"])
+    env.Append(LINKFLAGS=["-shared", "-g" if is_debug else "-O2"])
+
+    # Include paths
+    env.Append(CPPPATH=[
+        shared_dir,
+        os.path.join(godot_cpp_dir, "include"),
+        os.path.join(godot_cpp_dir, "gen", "include"),
+        "src",
+    ])
+
+    # Library
+    env.Append(LIBPATH=[os.path.join(godot_cpp_dir, "bin")])
+    env.Append(LIBS=["godot-cpp.linux.{}.{}".format(godot_target, arch)])
+
+    # System libs
+    env.Append(LIBS=["pthread"])
+
+    # Output
+    target_name = "liberynfall_client.linux.{}.x86_64.so".format(target)
+
+    # Sources — our C++ code
+    sources = []
+    for root, dirs, files in os.walk("src"):
+        for f in files:
+            if f.endswith(".cpp"):
+                sources.append(os.path.join(root, f))
+
+    # Build
+    binary = env.SharedLibrary(target="bin/" + target_name, source=sources)
+    Default(binary)
+
+else:
+    print("Unsupported platform:", sys.platform)
+    sys.exit(1)

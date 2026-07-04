@@ -12,6 +12,8 @@ client/bin/
 *.dylib
 *.dll
 *.exe
+*.os
+.sconsign.dblite
 
 # IDE
 .vscode/

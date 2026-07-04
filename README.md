@@ -67,7 +67,7 @@ See [PHASES.md](docs/PHASES.md) for the full roadmap.
 | Phase | Focus | Status |
 |-------|-------|--------|
 | 0 | Setup — builds, render cube, server boots | ✅ Complete |
-| 1 | The Grid — tile map, camera, tick loop, click-to-move | 🔲 Not Started |
+| 1 | The Grid — tile map, camera, tick loop, click-to-move | ✅ Complete |
 | 2 | The Loop — 1 skill, inventory, XP | 🔲 Not Started |
 | 3 | The Fight — melee combat, 1 NPC, HP, death | 🔲 Not Started |
 | 4 | The Gear — equipment, shops, food | 🔲 Not Started |

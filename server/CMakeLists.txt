@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Dependencies
 find_package(SQLite3 REQUIRED)
+find_package(Threads REQUIRED)
 
 # Shared library (protocol, constants, types)
 add_library(erynfall-shared INTERFACE)

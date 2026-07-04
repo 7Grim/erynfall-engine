@@ -1,6 +1,7 @@
 #pragma once
 
-#include "skill.h"
+#include "types/skill.h"
+#include <cmath>
 #include <array>
 #include <cstdint>
 

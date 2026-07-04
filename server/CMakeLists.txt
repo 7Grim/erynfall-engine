@@ -8,11 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
-# Shared library (protocol, constants, types)
+# Shared library (protocol, constants, types, game_data)
 add_library(erynfall-shared STATIC
     ${CMAKE_SOURCE_DIR}/../shared/protocol/buffer.cpp
 )
 target_include_directories(erynfall-shared PUBLIC ${CMAKE_SOURCE_DIR}/../shared)
+target_link_libraries(erynfall-shared PRIVATE SQLite::SQLite3)
 
 # Server executable
 file(GLOB_RECURSE SERVER_SOURCES src/*.cpp)

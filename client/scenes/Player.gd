@@ -91,6 +91,19 @@ func tile_to_world(tile: Vector2i) -> Vector2:
 		float(tile.y) - float(GRID_SIZE) / 2.0 + TILE_SIZE * 0.5
 	)
 
+## Rotate player mesh to face a tile
+func face_toward(tile: Vector2i) -> void:
+	if mesh_node:
+		var target_world = tile_to_world(tile)
+		var my_world = tile_to_world(tile_pos)
+		var dir = target_world - my_world
+		if dir.length() > 0.01:
+			mesh_node.rotation.y = atan2(-dir.x, -dir.y)
+
+## Get current tile position (for distance checks)
+func tile_position() -> Vector2i:
+	return tile_pos
+
 ## Convert world position → tile coord
 static func world_to_tile(world_pos: Vector3, grid_size: int, tile_size: float) -> Vector2i:
 	var offset = float(grid_size) * tile_size / 2.0

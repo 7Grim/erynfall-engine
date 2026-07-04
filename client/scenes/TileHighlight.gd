@@ -35,6 +35,12 @@ func _create_highlight_mesh() -> void:
 	set_mesh(mesh)
 	set_surface_override_material(0, mat)
 
+## Change highlight color (e.g. orange for trees, white for walkable)
+func set_highlight_color(color: Color) -> void:
+	var mat = get_surface_override_material(0) as StandardMaterial3D
+	if mat:
+		mat.albedo_color = color
+
 func update_position(world_pos: Vector3, grid_size: int, tile_size: float) -> void:
 	var offset = float(grid_size) * tile_size / 2.0
 	var tx = clampi(int(floor(world_pos.x + offset)), 0, grid_size - 1)

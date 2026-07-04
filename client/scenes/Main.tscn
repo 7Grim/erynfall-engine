@@ -1,6 +1,10 @@
 [gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scenes/Main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scenes/GameTick.gd" id="2_tick"]
+[ext_resource type="Script" path="res://scenes/Player.gd" id="3_player"]
+[ext_resource type="Script" path="res://scenes/OrbitalCamera.gd" id="4_cam"]
+[ext_resource type="Script" path="res://scenes/TileHighlight.gd" id="5_hl"]
 
 [sub_resource type="Environment" id="Environment_main"]
 background_mode = 1
@@ -18,3 +22,18 @@ environment = SubResource("Environment_main")
 rotation_degrees = Vector3(-45, -30, 0)
 light_color = Color(1, 0.95, 0.85, 1)
 light_energy = 1.5
+
+[node name="GameTick" type="Node" parent="."]
+script = ExtResource("2_tick")
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+
+[node name="Player" type="Node3D" parent="."]
+script = ExtResource("3_player")
+
+[node name="OrbitalCamera" type="Node3D" parent="."]
+script = ExtResource("4_cam")
+follow_target = NodePath("../Player")
+
+[node name="TileHighlight" type="MeshInstance3D" parent="."]
+script = ExtResource("5_hl")

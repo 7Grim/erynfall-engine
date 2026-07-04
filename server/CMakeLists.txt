@@ -9,8 +9,10 @@ find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
 # Shared library (protocol, constants, types)
-add_library(erynfall-shared INTERFACE)
-target_include_directories(erynfall-shared INTERFACE ${CMAKE_SOURCE_DIR}/../shared)
+add_library(erynfall-shared STATIC
+    ${CMAKE_SOURCE_DIR}/../shared/protocol/buffer.cpp
+)
+target_include_directories(erynfall-shared PUBLIC ${CMAKE_SOURCE_DIR}/../shared)
 
 # Server executable
 file(GLOB_RECURSE SERVER_SOURCES src/*.cpp)

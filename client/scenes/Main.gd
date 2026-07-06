@@ -1,7 +1,7 @@
 extends Node3D
 
-## Main game scene — Phase 2: The Loop.
-## Trees, woodcutting, inventory, skills, server connection.
+## Main game scene — Phase 3: The Fight.
+## Trees, woodcutting, inventory, skills, NPCs, combat, death.
 ## GDScript bootstrap — creates all nodes at runtime.
 
 const GRID_SIZE := 30
@@ -24,27 +24,36 @@ var camera: Node3D
 var highlight: MeshInstance3D
 var ground: MeshInstance3D
 var tree_manager: Node
+var npc_manager: Node
 var network: Node
 var inventory_panel: Control
 var skills_panel: Control
 var level_up_notif: CanvasLayer
 var chop_label: Label
 var msg_log: Label
+var combat_overlay: CanvasLayer
+var death_screen: CanvasLayer
 
 var tiles: Dictionary = {}
 var tree_tiles: Dictionary = {}  # Vector2i -> [obj_id, tree_type]
+var npc_tiles: Dictionary = {}   # Vector2i -> npc_id
 var _chopping := false
 var _chop_target := Vector2i()
 var _chop_timer := 0.0
+var _in_combat := false
+var _combat_target := ""
+var _dead := false
 var _messages: Array = []
 var _cached_levels: Dictionary = {}
+var _player_hp: int = 10
+var _player_max_hp: int = 10
 
 func _ready() -> void:
 	_bootstrap_scene()
 	_generate_map()
 	_spawn_trees()
 	_connect_signals()
-	print("[Main] Phase 2 initialized - trees, woodcutting, inventory, skills")
+	print("[Main] Phase 3 initialized - trees, NPCs, combat, death")
 
 func _bootstrap_scene() -> void:
 	# GameTick
@@ -64,7 +73,6 @@ func _bootstrap_scene() -> void:
 	camera.name = "OrbitalCamera"
 	camera.set_script(load("res://scenes/OrbitalCamera.gd"))
 	add_child(camera)
-	# Camera needs player reference
 	camera.set("follow_target", player)
 	
 	# Tile Highlight
@@ -83,6 +91,12 @@ func _bootstrap_scene() -> void:
 	tree_manager.name = "TreeManager"
 	tree_manager.set_script(load("res://scenes/TreeManager.gd"))
 	add_child(tree_manager)
+	
+	# NPC Manager
+	npc_manager = Node3D.new()
+	npc_manager.name = "NPCManager"
+	npc_manager.set_script(load("res://scenes/NPCManager.gd"))
+	add_child(npc_manager)
 	
 	# Network Client
 	network = Node.new()
@@ -121,8 +135,6 @@ func _bootstrap_scene() -> void:
 	level_up_notif.name = "LevelUpNotification"
 	level_up_notif.set_script(load("res://scenes/LevelUpNotification.gd"))
 	ui.add_child(level_up_notif)
-	
-	# Level-up label (inside the CanvasLayer)
 	var lvl_label = Label.new()
 	lvl_label.name = "Label"
 	lvl_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -133,6 +145,88 @@ func _bootstrap_scene() -> void:
 	lvl_label.add_theme_color_override("font_color", Color(1, 0.85, 0.2))
 	lvl_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0))
 	level_up_notif.add_child(lvl_label)
+	
+	# Combat Overlay (HP bar, hit messages)
+	combat_overlay = CanvasLayer.new()
+	combat_overlay.name = "CombatOverlay"
+	combat_overlay.set_script(load("res://scenes/CombatOverlay.gd"))
+	ui.add_child(combat_overlay)
+	# HP Bar panel — top center
+	var hp_panel = PanelContainer.new()
+	hp_panel.name = "HPPanel"
+	hp_panel.anchor_left = 0.5
+	hp_panel.anchor_right = 0.5
+	hp_panel.anchor_top = 0.0
+	hp_panel.offset_left = -120
+	hp_panel.offset_right = 120
+	hp_panel.offset_top = 10
+	hp_panel.offset_bottom = 50
+	combat_overlay.add_child(hp_panel)
+	var hp_bar = ProgressBar.new()
+	hp_bar.name = "HPBar"
+	hp_bar.max_value = 10
+	hp_bar.value = 10
+	hp_bar.show_percentage = false
+	hp_bar.custom_minimum_size = Vector2(200, 20)
+	hp_bar.add_theme_color_override("font_color", Color.WHITE)
+	hp_panel.add_child(hp_bar)
+	var hp_label = Label.new()
+	hp_label.name = "HPLabel"
+	hp_label.text = "10/10"
+	hp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hp_bar.add_child(hp_label)
+	# Combat label — below HP bar
+	var combat_label = Label.new()
+	combat_label.name = "CombatLabel"
+	combat_label.text = "Fighting: ..."
+	combat_label.anchor_left = 0.5
+	combat_label.anchor_right = 0.5
+	combat_label.anchor_top = 0.0
+	combat_label.offset_top = 55
+	combat_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	combat_label.add_theme_font_size_override("font_size", 14)
+	combat_label.add_theme_color_override("font_color", Color(1, 0.3, 0.3))
+	combat_label.visible = false
+	combat_overlay.add_child(combat_label)
+	# Hit message container — top right
+	var hit_container = VBoxContainer.new()
+	hit_container.name = "HitContainer"
+	hit_container.anchor_right = 1.0
+	hit_container.anchor_top = 0.0
+	hit_container.offset_left = -280
+	hit_container.offset_right = -20
+	hit_container.offset_top = 80
+	hit_container.visible = false
+	combat_overlay.add_child(hit_container)
+	
+	# Death Screen
+	death_screen = CanvasLayer.new()
+	death_screen.name = "DeathScreen"
+	death_screen.set_script(load("res://scenes/DeathScreen.gd"))
+	ui.add_child(death_screen)
+	var death_panel = PanelContainer.new()
+	death_panel.name = "Panel"
+	death_panel.anchor_left = 0.5
+	death_panel.anchor_right = 0.5
+	death_panel.anchor_top = 0.5
+	death_panel.anchor_bottom = 0.5
+	death_panel.offset_left = -150
+	death_panel.offset_right = 150
+	death_panel.offset_top = -60
+	death_panel.offset_bottom = 60
+	death_screen.add_child(death_panel)
+	var death_label = Label.new()
+	death_label.name = "Label"
+	death_label.text = "Oh dear, you are dead!"
+	death_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	death_label.add_theme_font_size_override("font_size", 20)
+	death_label.add_theme_color_override("font_color", Color.RED)
+	death_panel.add_child(death_label)
+	var timer_label = Label.new()
+	timer_label.name = "TimerLabel"
+	timer_label.text = "Respawning in 5..."
+	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	death_panel.add_child(timer_label)
 	
 	# Chop label
 	chop_label = Label.new()
@@ -242,6 +336,7 @@ func _connect_signals() -> void:
 	network.skill_update.connect(_on_skill_update)
 	network.skills_sync.connect(_on_skills_sync)
 	network.animation.connect(_on_animation)
+	network.npc_update.connect(_on_npc_update)
 
 func _on_tick() -> void:
 	player.tick_move()
@@ -259,7 +354,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			_handle_click()
 
 func _process(_delta: float) -> void:
-	# Update hover highlight every frame
 	var camera_3d = get_viewport().get_camera_3d()
 	if not camera_3d:
 		highlight.visible = false
@@ -274,12 +368,17 @@ func _process(_delta: float) -> void:
 		return
 	highlight.update_position(hit, GRID_SIZE, TILE_SIZE)
 	var tile = _world_to_tile(hit)
-	if tree_tiles.has(tile):
-		highlight.set_highlight_color(Color(0.8, 0.6, 0.2, 0.4))
+	# Color highlight based on what's on the tile
+	if npc_tiles.has(tile):
+		highlight.set_highlight_color(Color(1.0, 0.2, 0.2, 0.5))  # Red for NPCs
+	elif tree_tiles.has(tile):
+		highlight.set_highlight_color(Color(0.8, 0.6, 0.2, 0.4))  # Orange for trees
 	else:
-		highlight.set_highlight_color(Color(1, 1, 1, 0.3))
+		highlight.set_highlight_color(Color(1, 1, 1, 0.3))  # White for walkable
 
 func _handle_click() -> void:
+	if _dead:
+		return
 	var camera_3d = get_viewport().get_camera_3d()
 	if not camera_3d:
 		return
@@ -294,7 +393,19 @@ func _handle_click() -> void:
 	if tile.x < 0 or tile.x >= GRID_SIZE or tile.y < 0 or tile.y >= GRID_SIZE:
 		return
 	
-	# Tree click?
+	# NPC click? (attack)
+	if npc_tiles.has(tile):
+		var player_tile = player.tile_position()
+		var dist = abs(player_tile.x - tile.x) + abs(player_tile.y - tile.y)
+		if dist > 2:
+			_add_message("Too far away to attack.")
+			return
+		network.send_action_npc(0, tile.x, tile.y)
+		_add_message("You attack the NPC!")
+		player.face_toward(tile)
+		return
+	
+	# Tree click? (chop)
 	if tree_tiles.has(tile):
 		var player_tile = player.tile_position()
 		var dist = abs(player_tile.x - tile.x) + abs(player_tile.y - tile.y)
@@ -331,9 +442,23 @@ func _world_to_tile(world_pos: Vector3) -> Vector2i:
 
 func _on_system_message(msg: String) -> void:
 	_add_message(msg)
+	# Parse combat messages
+	if msg.begins_with("You hit the "):
+		_in_combat = true
+		combat_overlay.show_combat(msg.split(" for ")[0].replace("You hit the ", ""))
+		combat_overlay.add_hit_message(msg)
+	elif msg.begins_with("The ") and msg.find(" hits you") >= 0:
+		combat_overlay.add_hit_message("[DAMAGE] " + msg)
+	elif msg.find(" is dead!") >= 0:
+		_in_combat = false
+		combat_overlay.hide_combat()
+		combat_overlay.add_hit_message("[KILL] " + msg)
+	elif msg == "You respawn at home.":
+		_dead = false
+		death_screen.hide_death()
 
 func _on_position_update(x: int, y: int) -> void:
-	pass  # Movement is local-only in Phase 2
+	pass  # Movement is local-only
 
 func _on_inventory_sync(slots: Array) -> void:
 	inventory_panel.update_inventory(slots)
@@ -344,11 +469,18 @@ func _on_skill_update(skill_id: int, level: int, xp: int) -> void:
 	if level > old_level:
 		_on_level_up(skill_id, level)
 	_cached_levels[skill_id] = level
+	# Update HP overlay if hitpoints skill changed
+	if skill_id == 3:  # Hitpoints
+		_player_max_hp = level
+		combat_overlay.update_hp(_player_hp, _player_max_hp)
 
 func _on_skills_sync(skills: Array) -> void:
 	skills_panel.update_skills(skills)
 	for s in skills:
 		_cached_levels[s.id] = s.level
+		if s.id == 3:  # Hitpoints
+			_player_max_hp = s.level
+			_player_hp = s.level  # Full HP on connect
 
 func _on_animation(anim_id: int, target_x: int, target_y: int) -> void:
 	if anim_id == 1:
@@ -364,6 +496,20 @@ func _on_animation(anim_id: int, target_x: int, target_y: int) -> void:
 				_: _chop_timer = 3.0
 		chop_label.visible = true
 		chop_label.text = "Chopping..."
+	elif anim_id == 2:
+		# Attack animation
+		player.play_attack()
+
+func _on_npc_update(npc_id: int, npc_type: int, x: int, y: int, hp: int, max_hp: int, alive: bool) -> void:
+	# Set up NPC manager with grid reference on first call
+	if not npc_manager.has_method("setup"):
+		return
+	npc_manager.setup(ground, TILE_SIZE, GRID_SIZE)
+	npc_manager.sync_npc(npc_id, npc_type, x, y, hp, max_hp, alive)
+	
+	# Track NPC tile positions
+	if alive:
+		npc_tiles[Vector2i(x, y)] = npc_id
 
 func _on_level_up(skill_id: int, level: int) -> void:
 	var skill_names := [

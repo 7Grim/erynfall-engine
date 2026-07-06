@@ -8,22 +8,31 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
-# Shared library (protocol, constants, types, game_data)
+# Shared library (protocol, constants, types, game data)
 add_library(erynfall-shared STATIC
     ${CMAKE_SOURCE_DIR}/../shared/protocol/buffer.cpp
 )
 target_include_directories(erynfall-shared PUBLIC ${CMAKE_SOURCE_DIR}/../shared)
-target_link_libraries(erynfall-shared PRIVATE SQLite::SQLite3)
 
 # Server executable
-file(GLOB_RECURSE SERVER_SOURCES src/*.cpp)
-add_executable(erynfall-server ${SERVER_SOURCES})
-
-target_link_libraries(erynfall-server
-    PRIVATE
-        erynfall-shared
-        SQLite::SQLite3
-        Threads::Threads
+add_executable(erynfall-server
+    ${CMAKE_SOURCE_DIR}/src/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/game_loop.cpp
+    ${CMAKE_SOURCE_DIR}/src/net/tcp_server.cpp
+    ${CMAKE_SOURCE_DIR}/src/world/world_map.cpp
+    ${CMAKE_SOURCE_DIR}/src/world/world_objects.cpp
+    ${CMAKE_SOURCE_DIR}/src/world/npc_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/world/ground_items.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/sqlite_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/inventory.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/skill_set.cpp
 )
 
-target_include_directories(erynfall-server PRIVATE src)
+target_include_directories(erynfall-server PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/../shared
+)
+
+target_link_libraries(erynfall-server
+    PRIVATE erynfall-shared SQLite::SQLite3 Threads::Threads
+)

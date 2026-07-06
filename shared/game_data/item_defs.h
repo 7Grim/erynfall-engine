@@ -26,6 +26,15 @@ enum ItemID : uint16_t {
     RUNE_AXE       = 15,
     DRAGON_AXE     = 16,
 
+    // Swords
+    BRONZE_SWORD   = 20,
+    IRON_SWORD     = 21,
+    STEEL_SWORD    = 22,
+
+    // Shields
+    BRONZE_SHIELD  = 30,
+    IRON_SHIELD    = 31,
+
     // Misc
     COINS         = 998,
 };
@@ -96,6 +105,11 @@ inline constexpr ItemDef getItemDef(uint16_t id) {
         case ItemID::ADAMANT_AXE: return { id, "Adamant axe",      false, 3,    1600 };
         case ItemID::RUNE_AXE:    return { id, "Rune axe",         false, 3,    6400 };
         case ItemID::DRAGON_AXE:  return { id, "Dragon axe",       false, 3,    40000};
+        case ItemID::BRONZE_SWORD:return { id, "Bronze sword",     false, 0xFF, 16   };
+        case ItemID::IRON_SWORD:  return { id, "Iron sword",       false, 0xFF, 56   };
+        case ItemID::STEEL_SWORD: return { id, "Steel sword",      false, 0xFF, 200  };
+        case ItemID::BRONZE_SHIELD:return{ id, "Bronze shield",    false, 0xFF, 8    };
+        case ItemID::IRON_SHIELD: return { id, "Iron shield",      false, 0xFF, 28   };
         case ItemID::COINS:       return { id, "Coins",             true,  0xFF, 1    };
         default:                  return { id, "Unknown item",      false, 0xFF, 0    };
     }

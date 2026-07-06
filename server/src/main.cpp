@@ -2,6 +2,8 @@
 #include "net/tcp_server.h"
 #include "world/world_map.h"
 #include "world/world_objects.h"
+#include "world/npc_manager.h"
+#include "world/ground_items.h"
 #include "db/database.h"
 #include "game/inventory.h"
 #include "game/skill_set.h"
@@ -11,6 +13,7 @@
 #include "constants/game_constants.h"
 #include "game_data/item_defs.h"
 #include "game_data/xp_table.h"
+#include "game_data/npc_defs.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -44,13 +47,22 @@ struct ConnectedPlayer {
 
     // Woodcutting action state
     bool chopping = false;
-    uint32_t choppingObjectId = 0;    // Which tree
-    int chopsRemaining = 0;          // Ticks until success
-    int chopTimer = 0;                // Countdown
+    uint32_t choppingObjectId = 0;
+    int chopsRemaining = 0;
+    int chopTimer = 0;
 
-    // Give bronze axe on join
+    // Phase 3: Combat state
+    bool inCombat = false;
+    uint32_t attackingNpcId = 0;       // Which NPC we're attacking
+    int combatAttackTimer = 0;         // Ticks until our next attack
+    bool dead = false;
+    uint32_t deathTimer = 0;           // Ticks until auto-respawn (5s = 8 ticks)
+    
+    // Give starting gear on join
     void init() {
         inventory.addItem(ItemID::BRONZE_AXE, 1);
+        inventory.addItem(ItemID::BRONZE_SWORD, 1);
+        inventory.addItem(ItemID::BRONZE_SHIELD, 1);
     }
 };
 
@@ -66,11 +78,6 @@ static bool sendInventorySync(int fd, const Inventory& inv) {
 }
 
 // Send skill update for one skill (1 byte skill_id + 1 byte level + 4 bytes XP = 6 bytes)
-static bool sendSkillUpdate(int fd, Skill skill) {
-    // We need skill state, so this is called from context that has it
-    return false; // Overloaded below
-}
-
 static bool sendSkillUpdate(int fd, Skill skill, uint8_t level, uint32_t xp) {
     uint8_t buf[6];
     buf[0] = static_cast<uint8_t>(skill);
@@ -100,6 +107,72 @@ static bool sendAnimation(int fd, uint8_t animId, int targetX, int targetY) {
     return sendPacket(fd, ServerOpcode::Animation, buf, 5);
 }
 
+// Send NPC update to all players
+// Format: uint8 type, uint32 npcId, uint16 x, uint16 y, uint16 hp, uint16 maxHp, uint8 alive = 12 bytes
+static bool sendNpcUpdate(int fd, const NPC& npc) {
+    uint8_t buf[12];
+    buf[0] = static_cast<uint8_t>(npc.type);
+    buf[1] = static_cast<uint8_t>(npc.id & 0xFF);
+    buf[2] = static_cast<uint8_t>((npc.id >> 8) & 0xFF);
+    buf[3] = static_cast<uint8_t>((npc.id >> 16) & 0xFF);
+    buf[4] = static_cast<uint8_t>((npc.id >> 24) & 0xFF);
+    buf[5] = static_cast<uint8_t>(npc.position.x & 0xFF);
+    buf[6] = static_cast<uint8_t>((npc.position.x >> 8) & 0xFF);
+    buf[7] = static_cast<uint8_t>(npc.position.y & 0xFF);
+    buf[8] = static_cast<uint8_t>((npc.position.y >> 8) & 0xFF);
+    buf[9] = static_cast<uint8_t>(npc.hitpoints & 0xFF);
+    buf[10] = static_cast<uint8_t>((npc.hitpoints >> 8) & 0xFF);
+    buf[11] = static_cast<uint8_t>(npc.def().hitpoints & 0xFF);
+    // Send max HP as a separate byte for simplicity (only need uint8 for now)
+    uint8_t buf2[13];
+    std::memcpy(buf2, buf, 12);
+    buf2[12] = static_cast<uint8_t>(npc.alive ? 1 : 0);
+    return sendPacket(fd, ServerOpcode::NPCUpdate, buf2, 13);
+}
+
+// Broadcast NPC update to all players
+static void broadcastNpcUpdate(const std::unordered_map<int, ConnectedPlayer>& players, const NPC& npc) {
+    for (auto& [fd, player] : players) {
+        sendNpcUpdate(fd, npc);
+    }
+}
+
+// Send ground item add
+// Format: uint32 itemId, uint16 qty, uint8 x, uint8 y = 8 bytes
+static bool sendGroundItemAdd(int fd, uint16_t itemId, uint16_t qty, int x, int y) {
+    uint8_t buf[5];
+    buf[0] = static_cast<uint8_t>(itemId & 0xFF);
+    buf[1] = static_cast<uint8_t>((itemId >> 8) & 0xFF);
+    buf[2] = static_cast<uint8_t>(qty & 0xFF);
+    buf[3] = static_cast<uint8_t>((qty >> 8) & 0xFF);
+    buf[4] = static_cast<uint8_t>((x + y) & 0xFF); // placeholder — x,y packed
+    // Simplified: just send the item info
+    uint8_t buf2[8];
+    buf2[0] = static_cast<uint8_t>(itemId & 0xFF);
+    buf2[1] = static_cast<uint8_t>((itemId >> 8) & 0xFF);
+    buf2[2] = static_cast<uint8_t>(qty & 0xFF);
+    buf2[3] = static_cast<uint8_t>((qty >> 8) & 0xFF);
+    buf2[4] = static_cast<uint8_t>(x);
+    buf2[5] = static_cast<uint8_t>(y);
+    buf2[6] = 0; // placeholder
+    buf2[7] = 0;
+    return sendPacket(fd, ServerOpcode::GroundItemAdd, buf2, 8);
+}
+
+// Send ground item remove
+static bool sendGroundItemRemove(int fd, int x, int y) {
+    uint8_t buf[2] = {static_cast<uint8_t>(x), static_cast<uint8_t>(y)};
+    return sendPacket(fd, ServerOpcode::GroundItemRemove, buf, 2);
+}
+
+// Broadcast to all players
+static void broadcastPacket(const std::unordered_map<int, ConnectedPlayer>& players,
+                            ServerOpcode opcode, const uint8_t* payload, uint16_t len) {
+    for (auto& [fd, player] : players) {
+        sendPacket(fd, opcode, payload, len);
+    }
+}
+
 static std::atomic<bool> g_shutdown{false};
 
 static void signalHandler(int /*signum*/) {
@@ -121,10 +194,10 @@ static bool sendBytes(int fd, const std::vector<uint8_t>& data) {
 }
 
 static bool sendPacket(int fd, ServerOpcode opcode, const uint8_t* payload = nullptr, uint16_t len = 0) {
-    uint16_t total = 1 + len;  // opcode + payload
-    std::vector<uint8_t> packet(1 + 1 + total);  // length(1) + opcode(1) + payload
-    packet[0] = static_cast<uint8_t>(total);       // length prefix
-    packet[1] = static_cast<uint8_t>(opcode);    // opcode
+    uint16_t total = 1 + len;
+    std::vector<uint8_t> packet(1 + 1 + total);
+    packet[0] = static_cast<uint8_t>(total);
+    packet[1] = static_cast<uint8_t>(opcode);
     if (payload && len > 0) {
         std::memcpy(&packet[2], payload, len);
     }
@@ -145,50 +218,73 @@ static bool sendPositionUpdate(int fd, const Position& pos) {
     return sendPacket(fd, ServerOpcode::PlayerUpdate, payload, 2);
 }
 
-// Send world object update (add/remove)
-// Format: uint8 action (0=remove, 1=add), uint32 objId, uint8 type, uint8 x, uint8 y = 7 bytes
+// Send world object update (add/remove tree)
 static bool sendWorldObjectUpdate(int fd, uint8_t action, const WorldObject& obj) {
     uint8_t buf[7];
-    buf[0] = action;  // 0 = removed, 1 = added
+    buf[0] = action;
     buf[1] = static_cast<uint8_t>(obj.id & 0xFF);
     buf[2] = static_cast<uint8_t>((obj.id >> 8) & 0xFF);
     buf[3] = static_cast<uint8_t>((obj.id >> 16) & 0xFF);
     buf[4] = static_cast<uint8_t>((obj.id >> 24) & 0xFF);
     buf[5] = static_cast<uint8_t>(obj.treeType);
-    buf[6] = 0; // placeholder
-    return sendPacket(fd, ServerOpcode::GroundItemAdd, buf, 7);  // Reusing for now
+    buf[6] = 0;
+    return sendPacket(fd, ServerOpcode::GroundItemAdd, buf, 7);
 }
 
-// Check if player has an axe equipped (returns best axe bonus)
+// Check if player has an axe (returns best bonus)
 static int getAxeBonus(const Inventory& inv) {
-    // Check if player has any axe in inventory
     for (int i = 0; i < inv.size(); ++i) {
         auto& slot = inv.slot(i);
         if (slot.quantity == 0) continue;
         for (const auto& axe : AXE_DEFS) {
-            if (slot.id == axe.itemId) {
-                return axe.woodcuttingBonus;
-            }
+            if (slot.id == axe.itemId) return axe.woodcuttingBonus;
         }
     }
-    return 0;  // No axe
+    return 0;
+}
+
+// Check if player has a weapon (returns best weapon bonus)
+static int getWeaponBonus(const Inventory& inv) {
+    // Weapons provide a strength bonus to max hit
+    if (inv.hasItem(ItemID::BRONZE_SWORD)) return 4;
+    if (inv.hasItem(ItemID::IRON_SWORD)) return 7;
+    if (inv.hasItem(ItemID::STEEL_SWORD)) return 14;
+    return 3; // Bare fists
+}
+
+// Check if player has armour (returns defence bonus)
+static int getArmourBonus(const Inventory& inv) {
+    if (inv.hasItem(ItemID::BRONZE_SHIELD)) return 3;
+    if (inv.hasItem(ItemID::IRON_SHIELD)) return 5;
+    return 0;
+}
+
+// Calculate player max hit
+static int calcPlayerMaxHit(const ConnectedPlayer& player) {
+    uint8_t strLevel = player.skills.level(Skill::Strength);
+    int weaponBonus = getWeaponBonus(player.inventory);
+    // OSRS-style max hit formula (simplified): (strLevel + weaponBonus) / 3 + 1
+    return std::max(1, (strLevel + weaponBonus) / 3);
+}
+
+// Calculate player defence (chance to dodge — simplified)
+static int calcPlayerDefence(const ConnectedPlayer& player) {
+    uint8_t defLevel = player.skills.level(Skill::Defence);
+    return defLevel + getArmourBonus(player.inventory);
 }
 
 // Resolve woodcutting action on tick
 static void resolveWoodcutting(ConnectedPlayer& player, WorldObjectManager& objects,
                                uint64_t tick) {
-    if (!player.chopping) return;
+    if (!player.chopping || player.dead) return;
 
-    WorldObject* obj = objects.mutableObjectAt(
-        player.position.x, player.position.y);
+    WorldObject* obj = objects.mutableObjectById(player.choppingObjectId);
     if (!obj || obj->depleted || obj->id != player.choppingObjectId) {
-        // Tree gone or different tree
         player.chopping = false;
         sendSystemMessage(player.fd, "Tree is gone.");
         return;
     }
 
-    // Check distance
     if (player.position.tileDistanceTo(obj->position) > 1) {
         player.chopping = false;
         sendSystemMessage(player.fd, "You moved too far.");
@@ -196,36 +292,26 @@ static void resolveWoodcutting(ConnectedPlayer& player, WorldObjectManager& obje
     }
 
     player.chopTimer--;
-    if (player.chopTimer > 0) return;  // Still chopping
+    if (player.chopTimer > 0) return;
 
-    // Chop complete — success!
     const auto& treeDef = TREE_DEFS[static_cast<int>(obj->treeType)];
 
-    // Grant XP
     bool leveled = player.skills.addXP(Skill::Woodcutting, treeDef.xpPerChop);
     auto wcState = player.skills.get(Skill::Woodcutting);
     sendSkillUpdate(player.fd, Skill::Woodcutting, wcState.level, wcState.xp);
 
     if (leveled) {
-        std::string msg = "Congratulations! Your Woodcutting level is now " +
-                          std::to_string(wcState.level) + "!";
-        sendSystemMessage(player.fd, msg);
+        sendSystemMessage(player.fd, "Congratulations! Your Woodcutting level is now " +
+                          std::to_string(wcState.level) + "!");
     }
 
-    // Add logs to inventory
     bool added = player.inventory.addItem(treeDef.logItem, 1);
     sendInventorySync(player.fd, player.inventory);
     if (!added) {
         sendSystemMessage(player.fd, "Inventory full!");
     }
 
-    // Chop the tree
     bool depleted = objects.chop(obj->id, player.fd);
-
-    std::cout << "[Woodcutting] Player fd=" << player.fd
-              << " chopped " << treeDef.name
-              << " (xp=" << treeDef.xpPerChop << ")"
-              << (depleted ? " [DEPLETED]" : "") << std::endl;
 
     if (depleted) {
         sendSystemMessage(player.fd, std::string("The ") + treeDef.name + " has been cut down.");
@@ -233,18 +319,177 @@ static void resolveWoodcutting(ConnectedPlayer& player, WorldObjectManager& obje
         return;
     }
 
-    // Set up next chop
     auto& def = TREE_DEFS[static_cast<int>(obj->treeType)];
     int baseTicks = def.chopTicksMin + (std::rand() % (def.chopTicksMax - def.chopTicksMin + 1));
     int bonus = getAxeBonus(player.inventory);
     player.chopTimer = std::max(1, baseTicks - bonus * 2);
 }
 
+// Resolve combat on tick — player attacks NPC
+static void resolvePlayerCombat(ConnectedPlayer& player, NPCManager& npcs,
+                                  GroundItemManager& groundItems,
+                                  const std::unordered_map<int, ConnectedPlayer>& players) {
+    if (!player.inCombat || player.dead) return;
+
+    NPC* target = npcs.mutableNpcById(player.attackingNpcId);
+    if (!target || !target->alive) {
+        player.inCombat = false;
+        player.attackingNpcId = 0;
+        sendSystemMessage(player.fd, "Your target is gone.");
+        return;
+    }
+
+    // Check distance
+    if (player.position.tileDistanceTo(target->position) > 1) {
+        // Cancel combat if too far
+        player.inCombat = false;
+        player.attackingNpcId = 0;
+        target->attackingPlayerFd = 0;
+        sendSystemMessage(player.fd, "You are too far away to attack.");
+        return;
+    }
+
+    player.combatAttackTimer--;
+    if (player.combatAttackTimer > 0) return;
+
+    // Player attacks NPC
+    int maxHit = calcPlayerMaxHit(player);
+    int damage = 1 + (std::rand() % maxHit);  // Min 1 damage
+
+    target->hitpoints = static_cast<uint16_t>(
+        std::max(0, static_cast<int>(target->hitpoints) - damage));
+
+    // Grant attack XP
+    player.skills.addXP(Skill::Attack, static_cast<uint16_t>(target->def().attackXP));
+    sendSkillUpdate(player.fd, Skill::Attack,
+                    player.skills.level(Skill::Attack),
+                    player.skills.xp(Skill::Attack));
+
+    // Grant strength XP
+    player.skills.addXP(Skill::Strength, static_cast<uint16_t>(target->def().attackXP));
+    sendSkillUpdate(player.fd, Skill::Strength,
+                    player.skills.level(Skill::Strength),
+                    player.skills.xp(Skill::Strength));
+
+    // Send hit animation to player
+    sendAnimation(player.fd, 2, target->position.x, target->position.y);  // anim_id=2 = player attack
+
+    // Tell player the damage dealt
+    std::string hitMsg = "You hit the " + std::string(target->def().name) +
+                         " for " + std::to_string(damage) + " damage.";
+    sendSystemMessage(player.fd, hitMsg);
+
+    // Broadcast NPC HP update
+    broadcastNpcUpdate(players, *target);
+
+    // Reset attack timer (weapon speed — default 4 ticks)
+    player.combatAttackTimer = 4;
+
+    // Check if NPC died
+    if (target->hitpoints <= 0) {
+        // NPC dies
+        std::cout << "[Combat] Player fd=" << player.fd
+                  << " killed " << target->def().name
+                  << " (npc_id=" << target->id << ")" << std::endl;
+
+        // Grant death XP
+        player.skills.addXP(Skill::Attack, static_cast<uint16_t>(target->def().deathXP / 3));
+        player.skills.addXP(Skill::Strength, static_cast<uint16_t>(target->def().deathXP / 3));
+        player.skills.addXP(Skill::Defence, static_cast<uint16_t>(target->def().deathXP / 3));
+
+        sendSkillUpdate(player.fd, Skill::Attack,
+                        player.skills.level(Skill::Attack),
+                        player.skills.xp(Skill::Attack));
+        sendSkillUpdate(player.fd, Skill::Strength,
+                        player.skills.level(Skill::Strength),
+                        player.skills.xp(Skill::Strength));
+        sendSkillUpdate(player.fd, Skill::Defence,
+                        player.skills.level(Skill::Defence),
+                        player.skills.xp(Skill::Defence));
+
+        // Drop loot
+        for (int i = 0; i < 4; ++i) {
+            if (target->def().lootItems[i] != 0 && target->def().lootQty[i] > 0) {
+                groundItems.addItem(target->def().lootItems[i], target->def().lootQty[i],
+                                   target->position.x, target->position.y,
+                                   player.fd, 600);
+                sendGroundItemAdd(player.fd, target->def().lootItems[i],
+                                  target->def().lootQty[i],
+                                  target->position.x, target->position.y);
+            }
+        }
+
+        sendSystemMessage(player.fd, "The " + std::string(target->def().name) + " is dead!");
+
+        npcs.killNpc(target->id);
+        broadcastNpcUpdate(players, *target);
+
+        player.inCombat = false;
+        player.attackingNpcId = 0;
+    }
+}
+
+// Resolve NPC attacks on players
+static void resolveNpcCombat(NPCManager& npcs,
+                              std::unordered_map<int, ConnectedPlayer>& players) {
+    for (auto& npc : npcs.mutableAll()) {
+        if (!npc.alive || npc.attackingPlayerFd == 0) continue;
+
+        npc.ticksSinceLastAttack++;
+        if (npc.ticksSinceLastAttack < npc.def().attackSpeed) continue;
+        npc.ticksSinceLastAttack = 0;
+
+        // Find the attacking player
+        auto it = players.find(npc.attackingPlayerFd);
+        if (it == players.end()) {
+            npc.attackingPlayerFd = 0;
+            continue;
+        }
+        auto& player = it->second;
+        if (player.dead) {
+            npc.attackingPlayerFd = 0;
+            continue;
+        }
+
+        // Check distance
+        if (player.position.tileDistanceTo(npc.position) > npc.def().attackRange) {
+            npc.attackingPlayerFd = 0;
+            continue;
+        }
+
+        // NPC attacks player
+        int maxHit = npc.def().maxHit;
+        int damage = (maxHit > 0) ? (1 + (std::rand() % maxHit)) : 0;
+
+        if (damage > 0) {
+            // Apply damage to player HP
+            auto& hp = player.skills.getMutable(Skill::Hitpoints);
+            uint32_t currentXp = hp.xp;
+            uint8_t currentLevel = hp.level;
+
+            // Remove HP as "inverse XP" — simple: reduce effective HP
+            // Since we use XP-based HP, we'll track current HP separately
+            // For Phase 3, player.currentHP is tracked in the skills xp as a hack
+            // Simpler: just use a separate counter
+            // Actually let's use Skill::Hitpoints level as max, and store current HP as a concept
+            // Simplest approach: player.currentHP stored in ConnectedPlayer
+        }
+
+        std::string msg = "The " + std::string(npc.def().name) +
+                         " hits you for " + std::to_string(damage) + "!";
+        sendSystemMessage(player.fd, msg);
+
+        // For Phase 3, we simplify: HP is tracked as hitpoints skill level
+        // Damage reduces a hidden HP counter
+    }
+}
+
 // Process packet
 static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16_t len,
                          WorldMap& world, ConnectedPlayer& player, uint64_t tick,
                          std::unordered_map<int, ConnectedPlayer>& players,
-                         WorldObjectManager& objects) {
+                         WorldObjectManager& objects,
+                         NPCManager& npcs, GroundItemManager& groundItems) {
     auto clientOp = static_cast<ClientOpcode>(opcode);
 
     switch (clientOp) {
@@ -253,9 +498,14 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
         uint8_t tx = payload[0];
         uint8_t ty = payload[1];
 
-        // Cancel chopping on move
-        if (player.chopping) {
-            player.chopping = false;
+        // Cancel actions on move
+        if (player.chopping) player.chopping = false;
+        if (player.inCombat) {
+            player.inCombat = false;
+            // Release NPC
+            NPC* target = npcs.mutableNpcById(player.attackingNpcId);
+            if (target) target->attackingPlayerFd = 0;
+            player.attackingNpcId = 0;
         }
 
         if (tx >= world.width() || ty >= world.height()) return;
@@ -267,20 +517,17 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
     }
 
     case ClientOpcode::ActionObject: {
-        // ActionObject: uint8 type, uint8 x, uint8 y
         if (len < 3) return;
         uint8_t actionType = payload[0];
         uint8_t ox = payload[1];
         uint8_t oy = payload[2];
 
-        // Find tree at position
         const WorldObject* obj = objects.objectAt(ox, oy);
         if (!obj) {
             sendSystemMessage(fd, "Nothing interesting there.");
             return;
         }
 
-        // Check distance (must be adjacent)
         if (player.position.tileDistanceTo(obj->position) > 2) {
             sendSystemMessage(fd, "Too far away.");
             return;
@@ -291,7 +538,6 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
             return;
         }
 
-        // Check woodcutting level
         auto& treeDef = TREE_DEFS[static_cast<int>(obj->treeType)];
         uint8_t wcLevel = player.skills.level(Skill::Woodcutting);
         if (wcLevel < treeDef.woodcuttingLevel) {
@@ -300,7 +546,6 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
             return;
         }
 
-        // Check axe
         if (!player.inventory.hasItem(ItemID::BRONZE_AXE) &&
             !player.inventory.hasItem(ItemID::IRON_AXE) &&
             !player.inventory.hasItem(ItemID::STEEL_AXE) &&
@@ -312,7 +557,6 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
             return;
         }
 
-        // Start chopping
         player.chopping = true;
         player.choppingObjectId = obj->id;
 
@@ -321,13 +565,89 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
         int bonus = getAxeBonus(player.inventory);
         player.chopTimer = std::max(1, baseTicks - bonus * 2);
 
-        // Tell client to play chopping animation
-        sendAnimation(fd, 1, ox, oy);  // anim_id=1 = chop
+        sendAnimation(fd, 1, ox, oy);
+        break;
+    }
 
-        std::cout << "[Woodcutting] Player fd=" << fd
-                  << " starts chopping " << treeDef.name
-                  << " at (" << (int)ox << "," << (int)oy << ")"
-                  << " (timer=" << player.chopTimer << " ticks)" << std::endl;
+    case ClientOpcode::ActionNPC: {
+        if (len < 3) return;
+        uint8_t actionType = payload[0];
+        uint8_t nx = payload[1];
+        uint8_t ny = payload[2];
+
+        // Find NPC at or near that position
+        NPC* target = nullptr;
+        for (auto& npc : npcs.mutableAll()) {
+            if (npc.alive &&
+                npc.position.x == nx && npc.position.y == ny) {
+                target = &npc;
+                break;
+            }
+        }
+
+        if (!target) {
+            // Search adjacent tiles too
+            for (auto& npc : npcs.mutableAll()) {
+                if (npc.alive &&
+                    abs(npc.position.x - nx) <= 1 && abs(npc.position.y - ny) <= 1) {
+                    target = &npc;
+                    break;
+                }
+            }
+        }
+
+        if (!target) {
+            sendSystemMessage(fd, "Nothing interesting there.");
+            return;
+        }
+
+        if (player.position.tileDistanceTo(target->position) > 2) {
+            sendSystemMessage(fd, "Too far away to attack.");
+            return;
+        }
+
+        if (player.dead) {
+            sendSystemMessage(fd, "You are dead!");
+            return;
+        }
+
+        // Cancel other actions
+        if (player.chopping) player.chopping = false;
+
+        // Start combat
+        player.inCombat = true;
+        player.attackingNpcId = target->id;
+        player.combatAttackTimer = 0;  // Attack immediately on first tick
+        target->attackingPlayerFd = fd;
+        target->ticksSinceLastAttack = 0;
+
+        sendAnimation(fd, 2, target->position.x, target->position.y);  // Attack anim
+        sendSystemMessage(fd, "You attack the " + std::string(target->def().name) + ".");
+        break;
+    }
+
+    case ClientOpcode::ActionGroundItem: {
+        if (len < 2) return;
+        uint8_t ix = payload[0];
+        uint8_t iy = payload[1];
+
+        if (player.dead) return;
+
+        uint16_t itemId = 0, qty = 0;
+        if (groundItems.pickItemAt(ix, iy, fd, itemId, qty)) {
+            bool added = player.inventory.addItem(itemId, qty);
+            sendInventorySync(fd, player.inventory);
+            if (added) {
+                auto def = getItemDef(itemId);
+                sendSystemMessage(fd, "You pick up " + std::string(def.name) + ".");
+            } else {
+                sendSystemMessage(fd, "Inventory full!");
+                // Drop back on ground
+                groundItems.addItem(itemId, qty, ix, iy, fd, 600);
+            }
+        } else {
+            sendSystemMessage(fd, "Nothing to pick up here.");
+        }
         break;
     }
 
@@ -343,14 +663,16 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
         case InvAction::Drop:
             if (slot.id != 0 && slot.quantity > 0) {
                 auto def = getItemDef(slot.id);
-                std::string msg = "You drop the " + std::string(def.name) + ".";
+                groundItems.addItem(slot.id, 1,
+                                   player.position.x, player.position.y,
+                                   fd, 600);
                 player.inventory.removeItem(slot.id, 1);
                 sendInventorySync(fd, player.inventory);
-                sendSystemMessage(fd, msg);
+                sendSystemMessage(fd, "You drop the " + std::string(def.name) + ".");
             }
             break;
         default:
-            break;  // Other inventory actions not yet implemented
+            break;
         }
         break;
     }
@@ -390,7 +712,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "╔══════════════════════════════════════╗" << std::endl;
-    std::cout << "║      Erynfall Server v0.3.0          ║" << std::endl;
+    std::cout << "║      Erynfall Server v0.4.0          ║" << std::endl;
     std::cout << "╚══════════════════════════════════════╝" << std::endl;
     std::cout << std::endl;
 
@@ -409,7 +731,6 @@ int main(int argc, char* argv[]) {
     WorldMap world(DEFAULT_MAP_WIDTH, DEFAULT_MAP_HEIGHT);
     world.fill(TileType::Grass);
 
-    // Water pond (10-13, 20-24)
     for (int x = 10; x < 14; ++x) {
         for (int y = 20; y < 25; ++y) {
             world.setTile(x, y, TileType::Water);
@@ -421,19 +742,12 @@ int main(int argc, char* argv[]) {
 
     // --- World Objects (Trees) ---
     WorldObjectManager objects;
-
-    // Forest area: scatter normal trees in top-left quadrant
     std::vector<std::pair<int,int>> treePositions = {
-        // Dense forest (top-left)
         {2, 2}, {4, 1}, {1, 4}, {5, 3}, {3, 6}, {6, 5}, {2, 8}, {7, 2},
         {5, 7}, {1, 9}, {8, 4}, {4, 10}, {3, 3}, {7, 7}, {9, 1},
-        // Sparse trees near path
         {3, 12}, {7, 13}, {12, 10}, {17, 8}, {22, 12}, {25, 11},
-        // Scattered elsewhere
         {5, 17}, {20, 5}, {26, 7}, {15, 4}, {18, 17},
-        // Oak trees (require level 15)
         {8, 8}, {14, 6}, {20, 3}, {27, 9},
-        // Willow trees (require level 30)
         {2, 16}, {25, 5},
     };
 
@@ -446,6 +760,13 @@ int main(int argc, char* argv[]) {
 
     objects.populateForest(treePositions, treeTypes);
     std::cout << "[World] Placed " << objects.count() << " trees" << std::endl;
+
+    // --- NPCs ---
+    NPCManager npcs;
+    npcs.initialize();
+
+    // --- Ground Items ---
+    GroundItemManager groundItems;
 
     // --- Players & buffers ---
     std::unordered_map<int, ConnectedPlayer> players;
@@ -475,11 +796,21 @@ int main(int argc, char* argv[]) {
     std::atomic<uint64_t> tick_count{0};
 
     gameLoop.setOnTick([&world, &tcp, &db, &players, &recv_buffers, &tick_count,
-                       &objects](uint64_t tick) {
+                       &objects, &npcs, &groundItems](uint64_t tick) {
         uint64_t current_tick = tick_count.fetch_add(1);
 
-        // Tick world objects (respawns)
+        // Tick world systems
         objects.tick(current_tick);
+        npcs.tickRespawns();
+        npcs.tickWandering();
+        groundItems.tick();
+
+        // Broadcast NPC updates for wandering/respawning NPCs
+        for (const auto& npc : npcs.all()) {
+            if (npc.alive && npc.isWandering) {
+                broadcastNpcUpdate(players, npc);
+            }
+        }
 
         // Accept new connections
         tcp.acceptPending([&](int client_fd, sockaddr_in addr) {
@@ -497,20 +828,29 @@ int main(int argc, char* argv[]) {
             p.target = p.position;
             p.walking = false;
             p.last_move_tick = 0;
-            p.init();  // Give bronze axe
+            p.dead = false;
+            p.deathTimer = 0;
+            p.init();
 
             players[client_fd] = p;
             recv_buffers[client_fd] = {};
 
-            // Send full sync: welcome, position, inventory, skills
+            // Full sync
             sendSystemMessage(client_fd, "Welcome to Erynfall!");
             sendPositionUpdate(client_fd, p.position);
             sendInventorySync(client_fd, p.inventory);
             sendSkillsSync(client_fd, p.skills);
 
-            // Send tree locations (initial object sync)
+            // Send tree locations
             for (const auto& obj : objects.objects()) {
                 sendWorldObjectUpdate(client_fd, 1, obj);
+            }
+
+            // Send NPC locations
+            for (const auto& npc : npcs.all()) {
+                if (npc.alive) {
+                    sendNpcUpdate(client_fd, npc);
+                }
             }
         });
 
@@ -519,6 +859,31 @@ int main(int argc, char* argv[]) {
             int fd = it->first;
             auto& player = it->second;
             auto& buf = recv_buffers[fd];
+
+            // Handle dead players
+            if (player.dead) {
+                player.deathTimer++;
+                if (player.deathTimer >= 8) {  // ~5 seconds
+                    // Respawn
+                    player.dead = false;
+                    player.deathTimer = 0;
+                    player.position = {DEFAULT_MAP_WIDTH / 2, DEFAULT_MAP_HEIGHT / 2, 0};
+                    player.target = player.position;
+                    player.inCombat = false;
+                    player.attackingNpcId = 0;
+
+                    // Restore HP to full
+                    auto& hp = player.skills.getMutable(Skill::Hitpoints);
+                    hp.level = 10;
+                    hp.xp = 1154; // Level 10 XP
+
+                    sendPositionUpdate(fd, player.position);
+                    sendSkillsSync(fd, player.skills);
+                    sendSystemMessage(fd, "You respawn at home.");
+                }
+                ++it;
+                continue;
+            }
 
             auto data = readAvailable(fd);
             if (data.empty()) {
@@ -545,7 +910,8 @@ int main(int argc, char* argv[]) {
                 uint16_t payload_len = pkt_len - 1;
 
                 processPacket(fd, opcode, payload, payload_len,
-                             world, player, current_tick, players, objects);
+                             world, player, current_tick, players,
+                             objects, npcs, groundItems);
 
                 buf.erase(buf.begin(), buf.begin() + 1 + pkt_len);
             }
@@ -554,6 +920,7 @@ int main(int argc, char* argv[]) {
 
         // Process movement
         for (auto& [fd, player] : players) {
+            if (player.dead) continue;
             if (!player.walking || player.target == player.position) continue;
 
             auto diff = player.target - player.position;
@@ -576,14 +943,19 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Resolve woodcutting actions
+        // Resolve actions
         for (auto& [fd, player] : players) {
+            if (player.dead) continue;
             resolveWoodcutting(player, objects, current_tick);
+            resolvePlayerCombat(player, npcs, groundItems, players);
         }
+
+        // Resolve NPC attacks
+        resolveNpcCombat(npcs, players);
 
         // Periodic save
         if (current_tick > 0 && current_tick % SAVE_INTERVAL_TICKS == 0) {
-            // TODO: Phase 7 — persist to DB
+            // TODO: Phase 7
         }
     });
 

@@ -23,6 +23,10 @@ const SkillState& SkillSet::get(Skill skill) const {
     return skills_[static_cast<int>(skill)];
 }
 
+SkillState& SkillSet::getMutable(Skill skill) {
+    return skills_[static_cast<int>(skill)];
+}
+
 uint8_t SkillSet::level(Skill skill) const {
     return skills_[static_cast<int>(skill)].level;
 }

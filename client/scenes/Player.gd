@@ -110,3 +110,11 @@ static func world_to_tile(world_pos: Vector3, grid_size: int, tile_size: float) 
 	var tx = int(floor(world_pos.x + offset))
 	var ty = int(floor(world_pos.z + offset))
 	return Vector2i(tx, ty)
+
+## Attack animation — simple bob forward and back
+func play_attack() -> void:
+	if mesh_node:
+		var tween = create_tween()
+		var dir := Vector3.FORWARD.rotated(Vector3.UP, mesh_node.rotation.y)
+		tween.tween_property(mesh_node, "position", mesh_node.position + dir * 0.3, 0.1)
+		tween.tween_property(mesh_node, "position", mesh_node.position, 0.2)

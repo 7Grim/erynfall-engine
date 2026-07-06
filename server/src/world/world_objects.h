@@ -31,6 +31,9 @@ public:
     // Get mutable object at position
     WorldObject* mutableObjectAt(int x, int y);
 
+    // Get mutable object by ID
+    WorldObject* mutableObjectById(uint32_t id);
+
     // Chop a tree: reduce HP, mark depleted if 0
     // Returns: true if successful chop, false if can't chop
     bool chop(uint32_t objectId, uint16_t playerFd);

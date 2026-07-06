@@ -17,6 +17,7 @@ public:
 
     // Get current state
     const SkillState& get(Skill skill) const;
+    SkillState& getMutable(Skill skill);
 
     // Get level (calculated from XP)
     uint8_t level(Skill skill) const;

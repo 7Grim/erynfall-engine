@@ -12,6 +12,7 @@ signal skill_update(skill_id: int, level: int, xp: int)
 # For single-skill updates (6 bytes) vs full sync (115 bytes)
 signal skills_sync(skills: Array)  # Array of {id, level, xp}
 signal animation(anim_id: int, target_x: int, target_y: int)
+signal npc_update(npc_id: int, npc_type: int, x: int, y: int, hp: int, max_hp: int, alive: bool)
 signal tree_added(obj_id: int, tree_type: int, x: int, y: int)
 signal tree_removed(obj_id: int)
 
@@ -72,6 +73,12 @@ func send_walk_tile(x: int, y: int) -> void:
 
 func send_action_object(action_type: int, x: int, y: int) -> void:
 	_send_packet(0x03, PackedByteArray([action_type, x, y]))
+
+func send_action_npc(action_type: int, x: int, y: int) -> void:
+	_send_packet(0x04, PackedByteArray([action_type, x, y]))
+
+func send_action_ground_item(x: int, y: int) -> void:
+	_send_packet(0x05, PackedByteArray([0, x, y]))
 
 func send_keepalive() -> void:
 	_send_packet(0x09, PackedByteArray())
@@ -149,6 +156,17 @@ func _handle_packet(opcode: int, payload: PackedByteArray) -> void:
 				if payload.size() >= 2 + msg_len:
 					var msg := payload.slice(2, 2 + msg_len).get_string_from_utf8()
 					system_message.emit(msg)
+		
+		0x93:  # NPCUpdate
+			if payload.size() >= 13:
+				var npc_type := payload[0]
+				var npc_id := payload[1] | (payload[2] << 8) | (payload[3] << 16) | (payload[4] << 24)
+				var nx := payload[5] | (payload[6] << 8)
+				var ny := payload[7] | (payload[8] << 8)
+				var hp := payload[9] | (payload[10] << 8)
+				var max_hp := payload[11]
+				var alive := payload[12] == 1
+				npc_update.emit(npc_id, npc_type, nx, ny, hp, max_hp, alive)
 		
 		0x94:  # KeepAliveResponse
 			pass

@@ -23,6 +23,13 @@ WorldObject* WorldObjectManager::mutableObjectAt(int x, int y) {
     return nullptr;
 }
 
+WorldObject* WorldObjectManager::mutableObjectById(uint32_t id) {
+    for (auto& obj : objects_) {
+        if (obj.id == id) return &obj;
+    }
+    return nullptr;
+}
+
 bool WorldObjectManager::chop(uint32_t objectId, uint16_t playerFd) {
     for (auto& obj : objects_) {
         if (obj.id != objectId) continue;

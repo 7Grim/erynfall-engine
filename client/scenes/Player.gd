@@ -1,13 +1,15 @@
 extends Node3D
 
 ## Player entity — position, movement, rendering.
-## Moves 1 tile per 600ms tick (OSRS-accurate).
+## Moves 1 tile per 600ms tick with smooth animation.
+## OSRS-accurate: player node position tracks tile for camera follow.
 
 signal moved(from_pos: Vector2i, to_pos: Vector2i)
 signal destination_changed(tile: Vector2i)
 
 const TILE_SIZE := 1.0
 const GRID_SIZE := 30
+const WALK_DURATION := 0.6  # Seconds per tile (matches server tick)
 
 ## Tile position (integer grid coords)
 var tile_pos := Vector2i(0, 0):
@@ -15,7 +17,6 @@ var tile_pos := Vector2i(0, 0):
 		var old = tile_pos
 		tile_pos = value
 		moved.emit(old, value)
-		_update_visual_position()
 
 ## Target tile we're walking toward
 var target_tile := Vector2i(0, 0):
@@ -29,11 +30,14 @@ var is_walking := false
 
 ## Reference to visual mesh
 var mesh_node: MeshInstance3D
+var _walk_tween: Tween
 
 func _ready() -> void:
 	_create_player_mesh()
 	tile_pos = Vector2i(15, 15)  # Start center of map
 	target_tile = tile_pos
+	# Set node position to match tile (so camera follows)
+	_snap_to_tile(tile_pos)
 
 func _create_player_mesh() -> void:
 	mesh_node = MeshInstance3D.new()
@@ -44,12 +48,13 @@ func _create_player_mesh() -> void:
 	mesh_node.mesh = box
 	mesh_node.set_surface_override_material(0, mat)
 	add_child(mesh_node)
-	_update_visual_position()
 
-func _update_visual_position() -> void:
+## Snap player node + mesh to a tile instantly (for login, respawn)
+func _snap_to_tile(tile: Vector2i) -> void:
+	var world_pos = tile_to_world(tile)
+	position = Vector3(world_pos.x, 0, world_pos.y)
 	if mesh_node:
-		var world_pos = tile_to_world(tile_pos)
-		mesh_node.position = Vector3(world_pos.x, 0.7, world_pos.y)
+		mesh_node.position = Vector3(0, 0.7, 0)  # Local: mesh is centered on node
 
 ## Called every tick. Move 1 step toward target.
 func tick_move() -> void:
@@ -60,8 +65,7 @@ func tick_move() -> void:
 
 	# Snap if we're within 1 tile
 	if abs(diff.x) <= 1 and abs(diff.y) <= 1:
-		tile_pos = target_tile
-		is_walking = false
+		_animate_step(target_tile)
 		return
 
 	# Move 1 step — prioritize the axis with larger distance
@@ -72,11 +76,29 @@ func tick_move() -> void:
 		step.y = sign(diff.y)
 
 	var new_pos = tile_pos + step
-	tile_pos = new_pos
+	_animate_step(new_pos)
 
 	# Check if we reached target
 	if tile_pos == target_tile:
 		is_walking = false
+
+## Animate smooth movement from current visual position to a new tile
+func _animate_step(new_tile: Vector2i) -> void:
+	var world_pos = tile_to_world(new_tile)
+	
+	# Update logical tile position (emits signal)
+	tile_pos = new_tile
+	
+	# Cancel any running walk tween
+	if _walk_tween and _walk_tween.is_running():
+		_walk_tween.kill()
+	
+	# Animate both the node position (for camera) and mesh (visual)
+	var target_pos = Vector3(world_pos.x, 0, world_pos.y)
+	_walk_tween = create_tween()
+	_walk_tween.set_parallel(true)
+	_walk_tween.tween_property(self, "position", target_pos, WALK_DURATION)
+	# No need to tween mesh since it's local and node moves
 
 ## Request to walk to a tile. Returns false if blocked.
 func walk_to(tile: Vector2i) -> bool:
@@ -118,3 +140,12 @@ func play_attack() -> void:
 		var dir := Vector3.FORWARD.rotated(Vector3.UP, mesh_node.rotation.y)
 		tween.tween_property(mesh_node, "position", mesh_node.position + dir * 0.3, 0.1)
 		tween.tween_property(mesh_node, "position", mesh_node.position, 0.2)
+
+## Snap to tile instantly (for teleport/respawn, no animation)
+func snap_to_tile(tile: Vector2i) -> void:
+	if _walk_tween and _walk_tween.is_running():
+		_walk_tween.kill()
+	is_walking = false
+	tile_pos = tile
+	target_tile = tile
+	_snap_to_tile(tile)

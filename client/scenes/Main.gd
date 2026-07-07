@@ -508,6 +508,7 @@ func _on_system_message(msg: String) -> void:
 	elif msg == "You respawn at home.":
 		_dead = false
 		death_screen.hide_death()
+		player.snap_to_tile(Vector2i(15, 15))  # Snap to spawn point
 
 func _on_position_update(x: int, y: int) -> void:
 	pass  # Movement is local-only

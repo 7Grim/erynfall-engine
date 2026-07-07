@@ -1,12 +1,22 @@
 extends PanelContainer
 
 ## Inventory panel — 28 slots displayed in a 4×7 grid.
+## Phase 4: right-click for equip/unequip/use food.
 
 const ITEM_NAMES := {
 	0: "Normal logs", 1: "Oak logs", 2: "Willow logs", 3: "Maple logs",
 	4: "Yew logs", 5: "Magic logs",
 	10: "Bronze axe", 11: "Iron axe", 12: "Steel axe",
 	13: "Mithril axe", 14: "Adamant axe", 15: "Rune axe", 16: "Dragon axe",
+	20: "Bronze sword", 21: "Iron sword",
+	22: "Bronze shield", 23: "Iron shield",
+	24: "Bronze platebody", 25: "Iron platebody",
+	26: "Bronze platelegs", 27: "Iron platelegs",
+	28: "Bronze helm", 29: "Iron helm",
+	30: "Bronze gloves", 31: "Iron gloves",
+	32: "Bronze boots", 33: "Iron boots",
+	34: "Cooked shrimp", 35: "Cooked sardine",
+	36: "Bread", 37: "Cooked meat",
 	998: "Coins",
 }
 
@@ -24,8 +34,31 @@ const ITEM_COLORS := {
 	14: Color(0.30, 0.50, 0.30), # Adamant axe — green-ish
 	15: Color(0.20, 0.40, 0.65), # Rune axe — blue
 	16: Color(0.50, 0.15, 0.15), # Dragon axe — red
+	20: Color(0.72, 0.53, 0.22), # Bronze sword
+	21: Color(0.70, 0.70, 0.70), # Iron sword
+	22: Color(0.72, 0.53, 0.22), # Bronze shield
+	23: Color(0.70, 0.70, 0.70), # Iron shield
+	24: Color(0.72, 0.53, 0.22), # Bronze platebody
+	25: Color(0.70, 0.70, 0.70), # Iron platebody
+	26: Color(0.72, 0.53, 0.22), # Bronze platelegs
+	27: Color(0.70, 0.70, 0.70), # Iron platelegs
+	28: Color(0.72, 0.53, 0.22), # Bronze helm
+	29: Color(0.70, 0.70, 0.70), # Iron helm
+	30: Color(0.72, 0.53, 0.22), # Bronze gloves
+	31: Color(0.70, 0.70, 0.70), # Iron gloves
+	32: Color(0.72, 0.53, 0.22), # Bronze boots
+	33: Color(0.70, 0.70, 0.70), # Iron boots
+	34: Color(0.6, 0.8, 0.3),     # Cooked shrimp — green
+	35: Color(0.5, 0.7, 0.4),     # Cooked sardine
+	36: Color(0.7, 0.6, 0.3),     # Bread
+	37: Color(0.6, 0.4, 0.3),     # Cooked meat
 	998: Color(0.85, 0.75, 0.20), # Coins — gold
 }
+
+signal action_requested(action: int, slot: int)  # Phase 4: equip(0)/unequip(1)/use(3)
+
+const FOOD_ITEMS = [34, 35, 36, 37]  # Cooked shrimp, sardine, bread, meat
+const EQUIP_ITEMS = [10, 11, 12, 13, 14, 15, 16, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
 
 var _slots: Array = []  # Array of Panel nodes
 var _slot_data: Array = []  # Array of {id, qty}
@@ -49,6 +82,7 @@ func _build_slots() -> void:
 	
 	for i in range(28):
 		var slot_panel = Panel.new()
+		slot_panel.name = "Slot%d" % i
 		slot_panel.custom_minimum_size = Vector2(56, 28)
 		slot_panel.add_theme_stylebox_override("panel", _create_slot_style(Color(0.15, 0.15, 0.15, 0.8)))
 		

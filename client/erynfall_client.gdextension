@@ -2,6 +2,7 @@
 [configuration]
 entry_symbol = "erynfall_client_init"
 symbol_prefix = "erynfall_client_"
+compatibility_minimum = 4.5
 
 [libraries]
 linux.debug.x86_64 = "res://bin/liberynfall_client.linux.debug.x86_64.so"

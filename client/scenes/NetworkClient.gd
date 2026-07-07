@@ -15,6 +15,10 @@ signal animation(anim_id: int, target_x: int, target_y: int)
 signal npc_update(npc_id: int, npc_type: int, x: int, y: int, hp: int, max_hp: int, alive: bool)
 signal tree_added(obj_id: int, tree_type: int, x: int, y: int)
 signal tree_removed(obj_id: int)
+signal equipment_sync(slots: Array)  # Phase 4: Array of {id, qty}
+signal gold_update(gold: int)         # Phase 4: player gold balance
+signal health_update(current_hp: int, max_hp: int)  # Phase 4: HP
+signal shop_open(items: Array)        # Phase 4: shop stock
 
 var _socket := StreamPeerTCP.new()
 var _connected := false
@@ -85,6 +89,9 @@ func send_keepalive() -> void:
 
 func send_inventory_action(action: int, slot: int) -> void:
 	_send_packet(0x06, PackedByteArray([action, slot]))
+
+func send_shop_action(shop_action: int, item_id: int) -> void:
+	_send_packet(0x0A, PackedByteArray([shop_action, item_id & 0xFF, (item_id >> 8) & 0xFF]))
 
 func _send_packet(opcode: int, payload: PackedByteArray) -> void:
 	if not _connected:
@@ -167,6 +174,21 @@ func _handle_packet(opcode: int, payload: PackedByteArray) -> void:
 				var max_hp := payload[11]
 				var alive := payload[12] == 1
 				npc_update.emit(npc_id, npc_type, nx, ny, hp, max_hp, alive)
+
+		0x85:  # EquipmentSync (Phase 4)
+			_parse_equipment(payload)
+
+		0x96:  # ShopOpen (Phase 4)
+			_parse_shop(payload)
+
+		0x97:  # GoldUpdate (Phase 4)
+			if payload.size() >= 4:
+				var gold := payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)
+				gold_update.emit(gold)
+
+		0x98:  # HealthUpdate (Phase 4)
+			if payload.size() >= 2:
+				health_update.emit(payload[0], payload[1])
 		
 		0x94:  # KeepAliveResponse
 			pass
@@ -197,3 +219,32 @@ func _parse_skills_full(payload: PackedByteArray) -> void:
 		var xp := payload[offset + 1] | (payload[offset + 2] << 8) | (payload[offset + 3] << 16) | (payload[offset + 4] << 24)
 		skills.append({"id": skill_id, "level": level, "xp": xp})
 	skills_sync.emit(skills)
+
+func _parse_equipment(payload: PackedByteArray) -> void:
+	var slots := []
+	for i in range(10):
+		var offset := i * 4
+		if payload.size() < offset + 4:
+			slots.append({"id": 0, "qty": 0})
+			continue
+		var item_id := payload[offset] | (payload[offset + 1] << 8)
+		var qty := payload[offset + 2] | (payload[offset + 3] << 8)
+		slots.append({"id": item_id, "qty": qty})
+	equipment_sync.emit(slots)
+
+func _parse_shop(payload: PackedByteArray) -> void:
+	if payload.size() < 1:
+		return
+	var count := payload[0]
+	var items := []
+	var offset := 1
+	for i in range(count):
+		if payload.size() < offset + 7:
+			break
+		var item_id := payload[offset] | (payload[offset + 1] << 8)
+		var buy_price := payload[offset + 2] | (payload[offset + 3] << 8)
+		var sell_price := payload[offset + 4] | (payload[offset + 5] << 8)
+		var qty := payload[offset + 6]  # 0xFF = infinite
+		items.append({"id": item_id, "buy": buy_price, "sell": sell_price, "qty": qty})
+		offset += 7
+	shop_open.emit(items)

@@ -15,6 +15,7 @@ enum class ClientOpcode : uint8_t {
     EquipmentAction  = 0x07,
     ChatMessage      = 0x08,
     KeepAlive        = 0x09,
+    ShopAction       = 0x0A,  // Phase 4: buy/sell from shop
 };
 
 // Server → Client
@@ -34,6 +35,9 @@ enum class ServerOpcode : uint8_t {
     NPCUpdate        = 0x93,
     KeepAliveResponse = 0x94,
     LogoutResponse   = 0x95,
+    ShopOpen         = 0x96,  // Phase 4: send shop stock to client
+    GoldUpdate       = 0x97,  // Phase 4: player gold balance
+    HealthUpdate     = 0x98,  // Phase 4: current HP update
 };
 
 // Login status codes
@@ -61,6 +65,13 @@ enum class InvAction : uint8_t {
     Drop       = 2,
     Use        = 3,
     Swap       = 4,
+};
+
+// Shop action types (for ClientOpcode::ShopAction)
+enum class ShopActionType : uint8_t {
+    Buy        = 0,
+    Sell       = 1,
+    Close      = 2,
 };
 
 } // namespace erynfall

@@ -7,6 +7,7 @@
 #include "db/database.h"
 #include "game/inventory.h"
 #include "game/skill_set.h"
+#include "game/equipment.h"
 #include "protocol/opcodes.h"
 #include "protocol/buffer.h"
 
@@ -57,12 +58,28 @@ struct ConnectedPlayer {
     int combatAttackTimer = 0;         // Ticks until our next attack
     bool dead = false;
     uint32_t deathTimer = 0;           // Ticks until auto-respawn (5s = 8 ticks)
-    
+
+    // Phase 4: Equipment, gold, HP, shop state
+    Equipment equipment;
+    uint32_t gold = 0;                 // Coins in inventory (stackable)
+    uint8_t currentHP = 10;             // Current hitpoints (max from skill level)
+    uint8_t maxHP = 10;                // Cached max HP from skill level
+    bool shopOpen = false;              // Is the player viewing a shop?
+
     // Give starting gear on join
     void init() {
         inventory.addItem(ItemID::BRONZE_AXE, 1);
         inventory.addItem(ItemID::BRONZE_SWORD, 1);
         inventory.addItem(ItemID::BRONZE_SHIELD, 1);
+        gold = 50;  // Starting gold to buy food/gear
+        maxHP = skills.level(Skill::Hitpoints);
+        currentHP = maxHP;
+    }
+
+    // Recalculate max HP from skill level
+    void recalcMaxHP() {
+        maxHP = skills.level(Skill::Hitpoints);
+        if (currentHP > maxHP) currentHP = maxHP;
     }
 };
 
@@ -94,6 +111,47 @@ static bool sendSkillsSync(int fd, const SkillSet& skills) {
     uint8_t buf[115];
     skills.serialize(buf);
     return sendPacket(fd, ServerOpcode::SkillUpdate, buf, 115);
+}
+
+// Send equipment sync (10 slots × 4 bytes = 40 bytes)
+static bool sendEquipmentSync(int fd, const Equipment& equip) {
+    uint8_t buf[40];
+    equip.serialize(buf);
+    return sendPacket(fd, ServerOpcode::EquipmentSync, buf, 40);
+}
+
+// Send gold update (4 bytes uint32)
+static bool sendGoldUpdate(int fd, uint32_t gold) {
+    uint8_t buf[4];
+    buf[0] = static_cast<uint8_t>(gold & 0xFF);
+    buf[1] = static_cast<uint8_t>((gold >> 8) & 0xFF);
+    buf[2] = static_cast<uint8_t>((gold >> 16) & 0xFF);
+    buf[3] = static_cast<uint8_t>((gold >> 24) & 0xFF);
+    return sendPacket(fd, ServerOpcode::GoldUpdate, buf, 4);
+}
+
+// Send health update (2 bytes: currentHP + maxHP)
+static bool sendHealthUpdate(int fd, uint8_t currentHP, uint8_t maxHP) {
+    uint8_t buf[2] = { currentHP, maxHP };
+    return sendPacket(fd, ServerOpcode::HealthUpdate, buf, 2);
+}
+
+// Send shop stock to player
+// Format: uint8 count + per item: uint16 itemId + uint16 buyPrice + uint16 sellPrice + uint8 qty
+static bool sendShopOpen(int fd) {
+    uint8_t buf[256];
+    int off = 0;
+    buf[off++] = static_cast<uint8_t>(GENERAL_STORE_STOCK.size());
+    for (const auto& item : GENERAL_STORE_STOCK) {
+        buf[off++] = static_cast<uint8_t>(item.itemId & 0xFF);
+        buf[off++] = static_cast<uint8_t>((item.itemId >> 8) & 0xFF);
+        buf[off++] = static_cast<uint8_t>(item.buyPrice & 0xFF);
+        buf[off++] = static_cast<uint8_t>((item.buyPrice >> 8) & 0xFF);
+        buf[off++] = static_cast<uint8_t>(item.sellPrice & 0xFF);
+        buf[off++] = static_cast<uint8_t>((item.sellPrice >> 8) & 0xFF);
+        buf[off++] = static_cast<uint8_t>(item.quantity & 0xFF); // -1 for infinite shown as 0xFF
+    }
+    return sendPacket(fd, ServerOpcode::ShopOpen, buf, off);
 }
 
 // Send animation instruction (1 byte anim_id + 2 bytes target_x + 2 bytes target_y = 5 bytes)
@@ -243,34 +301,23 @@ static int getAxeBonus(const Inventory& inv) {
     return 0;
 }
 
-// Check if player has a weapon (returns best weapon bonus)
-static int getWeaponBonus(const Inventory& inv) {
-    // Weapons provide a strength bonus to max hit
-    if (inv.hasItem(ItemID::BRONZE_SWORD)) return 4;
-    if (inv.hasItem(ItemID::IRON_SWORD)) return 7;
-    if (inv.hasItem(ItemID::STEEL_SWORD)) return 14;
-    return 3; // Bare fists
-}
-
-// Check if player has armour (returns defence bonus)
-static int getArmourBonus(const Inventory& inv) {
-    if (inv.hasItem(ItemID::BRONZE_SHIELD)) return 3;
-    if (inv.hasItem(ItemID::IRON_SHIELD)) return 5;
-    return 0;
-}
-
-// Calculate player max hit
+// Calculate player max hit (Phase 4: uses equipment bonuses)
 static int calcPlayerMaxHit(const ConnectedPlayer& player) {
     uint8_t strLevel = player.skills.level(Skill::Strength);
-    int weaponBonus = getWeaponBonus(player.inventory);
-    // OSRS-style max hit formula (simplified): (strLevel + weaponBonus) / 3 + 1
-    return std::max(1, (strLevel + weaponBonus) / 3);
+    int weaponBonus = player.equipment.getStrengthBonus();
+    // OSRS-style max hit formula: floor((strLevel + weaponBonus) * 0.85) + 1
+    return std::max(1, static_cast<int>((strLevel + weaponBonus) * 0.85) + 1);
 }
 
-// Calculate player defence (chance to dodge — simplified)
+// Calculate player defence (Phase 4: uses equipment bonuses)
 static int calcPlayerDefence(const ConnectedPlayer& player) {
     uint8_t defLevel = player.skills.level(Skill::Defence);
-    return defLevel + getArmourBonus(player.inventory);
+    return defLevel + player.equipment.getDefenceBonus();
+}
+
+// Calculate player attack speed from equipped weapon
+static int calcPlayerAttackSpeed(const ConnectedPlayer& player) {
+    return player.equipment.getAttackSpeed();
 }
 
 // Resolve woodcutting action on tick
@@ -382,8 +429,8 @@ static void resolvePlayerCombat(ConnectedPlayer& player, NPCManager& npcs,
     // Broadcast NPC HP update
     broadcastNpcUpdate(players, *target);
 
-    // Reset attack timer (weapon speed — default 4 ticks)
-    player.combatAttackTimer = 4;
+    // Reset attack timer (weapon speed from equipment)
+    player.combatAttackTimer = calcPlayerAttackSpeed(player);
 
     // Check if NPC died
     if (target->hitpoints <= 0) {
@@ -410,12 +457,21 @@ static void resolvePlayerCombat(ConnectedPlayer& player, NPCManager& npcs,
         // Drop loot
         for (int i = 0; i < 4; ++i) {
             if (target->def().lootItems[i] != 0 && target->def().lootQty[i] > 0) {
-                groundItems.addItem(target->def().lootItems[i], target->def().lootQty[i],
-                                   target->position.x, target->position.y,
-                                   player.fd, 600);
-                sendGroundItemAdd(player.fd, target->def().lootItems[i],
-                                  target->def().lootQty[i],
-                                  target->position.x, target->position.y);
+                // Phase 4: coins go directly to gold instead of ground
+                if (target->def().lootItems[i] == ItemID::COINS) {
+                    int qty = target->def().lootQty[i];
+                    if (qty == 5) qty = 1 + (std::rand() % 5); // Chicken random drop
+                    player.gold += qty;
+                    sendGoldUpdate(player.fd, player.gold);
+                    sendSystemMessage(player.fd, "You receive " + std::to_string(qty) + " gold.");
+                } else {
+                    groundItems.addItem(target->def().lootItems[i], target->def().lootQty[i],
+                                       target->position.x, target->position.y,
+                                       player.fd, 600);
+                    sendGroundItemAdd(player.fd, target->def().lootItems[i],
+                                      target->def().lootQty[i],
+                                      target->position.x, target->position.y);
+                }
             }
         }
 
@@ -429,7 +485,7 @@ static void resolvePlayerCombat(ConnectedPlayer& player, NPCManager& npcs,
     }
 }
 
-// Resolve NPC attacks on players
+// Resolve NPC attacks on players (Phase 4: proper HP damage + death)
 static void resolveNpcCombat(NPCManager& npcs,
                               std::unordered_map<int, ConnectedPlayer>& players) {
     for (auto& npc : npcs.mutableAll()) {
@@ -461,26 +517,43 @@ static void resolveNpcCombat(NPCManager& npcs,
         int maxHit = npc.def().maxHit;
         int damage = (maxHit > 0) ? (1 + (std::rand() % maxHit)) : 0;
 
-        if (damage > 0) {
-            // Apply damage to player HP
-            auto& hp = player.skills.getMutable(Skill::Hitpoints);
-            uint32_t currentXp = hp.xp;
-            uint8_t currentLevel = hp.level;
-
-            // Remove HP as "inverse XP" — simple: reduce effective HP
-            // Since we use XP-based HP, we'll track current HP separately
-            // For Phase 3, player.currentHP is tracked in the skills xp as a hack
-            // Simpler: just use a separate counter
-            // Actually let's use Skill::Hitpoints level as max, and store current HP as a concept
-            // Simplest approach: player.currentHP stored in ConnectedPlayer
+        // Apply defence reduction (simplified: reduce damage by defence% capped)
+        int defence = calcPlayerDefence(player);
+        if (defence > 0 && damage > 0) {
+            int reduce = std::min(damage - 1, defence / 10);
+            damage -= reduce;
+            if (damage < 0) damage = 0;
         }
 
-        std::string msg = "The " + std::string(npc.def().name) +
-                         " hits you for " + std::to_string(damage) + "!";
-        sendSystemMessage(player.fd, msg);
+        if (damage > 0) {
+            player.currentHP = static_cast<uint8_t>(
+                std::max(0, static_cast<int>(player.currentHP) - damage));
 
-        // For Phase 3, we simplify: HP is tracked as hitpoints skill level
-        // Damage reduces a hidden HP counter
+            sendHealthUpdate(player.fd, player.currentHP, player.maxHP);
+
+            std::string msg = "The " + std::string(npc.def().name) +
+                             " hits you for " + std::to_string(damage) + "!";
+            sendSystemMessage(player.fd, msg);
+
+            // Check if player died
+            if (player.currentHP <= 0) {
+                player.dead = true;
+                player.deathTimer = 0;
+                player.inCombat = false;
+                player.chopping = false;
+                npc.attackingPlayerFd = 0;
+
+                sendSystemMessage(player.fd, "Oh dear, you are dead!");
+
+                // Drop most inventory items on the ground (keep 3 most valuable)
+                // For Phase 4: drop all coins + equipped items
+                // TODO: keep-item logic in later phase
+            }
+        } else {
+            std::string msg = "The " + std::string(npc.def().name) +
+                             " attacks but misses!";
+            sendSystemMessage(player.fd, msg);
+        }
     }
 }
 
@@ -606,6 +679,14 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
             return;
         }
 
+        // Phase 4: Shopkeeper opens shop instead of combat
+        if (target->type == NPCType::SHOPKEEPER) {
+            player.shopOpen = true;
+            sendShopOpen(fd);
+            sendSystemMessage(fd, "You trade with the Shopkeeper.");
+            return;
+        }
+
         if (player.dead) {
             sendSystemMessage(fd, "You are dead!");
             return;
@@ -660,6 +741,77 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
 
         auto& slot = player.inventory.slot(slotIdx);
         switch (static_cast<InvAction>(invAction)) {
+        case InvAction::Equip: {
+            if (slot.id == 0 || slot.quantity == 0) break;
+            // Try to equip the item
+            auto def = getItemDef(slot.id);
+            if (def.equipSlot == static_cast<uint16_t>(EquipSlot::NONE)) {
+                sendSystemMessage(fd, "You can't equip that.");
+                break;
+            }
+            uint8_t atkLvl = player.skills.level(Skill::Attack);
+            uint8_t defLvl = player.skills.level(Skill::Defence);
+            ItemStack swapped = player.equipment.equip(slot.id, atkLvl, defLvl);
+            if (swapped.id == 0 && swapped.quantity == 0) {
+                // Check if it actually equipped (could fail due to level req)
+                bool found = false;
+                for (int i = 0; i < Equipment::SLOT_COUNT; ++i) {
+                    if (player.equipment.slot(static_cast<EquipSlot>(i)).id == slot.id) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    sendSystemMessage(fd, "You don't have the required level to equip that.");
+                    break;
+                }
+                // Successfully equipped (empty slot)
+                player.inventory.removeItem(slot.id, 1);
+            } else if (swapped.id != 0) {
+                // Swapped — put old item back in inventory
+                player.inventory.removeItem(slot.id, 1);
+                player.inventory.addItem(swapped.id, swapped.quantity);
+                if (!player.inventory.hasItem(swapped.id)) {
+                    // Inventory full — undo the equip
+                    EquipSlot eqSlotType = static_cast<EquipSlot>(getItemDef(slot.id).equipSlot);
+                    player.equipment.unequip(eqSlotType);
+                    // Put old item back in equip slot
+                    player.equipment.equip(swapped.id, 255, 255);
+                    // Put new item back in inventory
+                    player.inventory.addItem(slot.id, 1);
+                    sendSystemMessage(fd, "Not enough inventory space.");
+                    break;
+                }
+            }
+            sendInventorySync(fd, player.inventory);
+            sendEquipmentSync(fd, player.equipment);
+            auto itemName = getItemDef(slot.id).name;
+            sendSystemMessage(fd, std::string("You equip the ") + itemName + ".");
+            break;
+        }
+        case InvAction::Unequip: {
+            if (slot.id == 0 || slot.quantity == 0) break;
+            // Find which equipment slot this item is in (if any)
+            // For unequip from inventory view, we unequip from the matching equip slot
+            auto def = getItemDef(slot.id);
+            EquipSlot eqSlot = static_cast<EquipSlot>(def.equipSlot);
+            if (eqSlot == EquipSlot::NONE) break;
+            if (player.equipment.slot(eqSlot).id != slot.id) break;
+            ItemStack unequipped = player.equipment.unequip(eqSlot);
+            if (unequipped.id != 0) {
+                bool added = player.inventory.addItem(unequipped.id, 1);
+                if (added) {
+                    sendInventorySync(fd, player.inventory);
+                    sendEquipmentSync(fd, player.equipment);
+                    sendSystemMessage(fd, std::string("You remove the ") + def.name + ".");
+                } else {
+                    // Inventory full — re-equip
+                    player.equipment.equip(unequipped.id, 255, 255);
+                    sendSystemMessage(fd, "Not enough inventory space.");
+                }
+            }
+            break;
+        }
         case InvAction::Drop:
             if (slot.id != 0 && slot.quantity > 0) {
                 auto def = getItemDef(slot.id);
@@ -671,7 +823,98 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
                 sendSystemMessage(fd, "You drop the " + std::string(def.name) + ".");
             }
             break;
+        case InvAction::Use: {
+            // Phase 4: Eat food
+            if (slot.id == 0 || slot.quantity == 0) break;
+            if (isFood(slot.id)) {
+                if (player.currentHP >= player.maxHP) {
+                    sendSystemMessage(fd, "You are already at full health.");
+                    break;
+                }
+                uint8_t heal = getFoodHeal(slot.id);
+                uint8_t oldHP = player.currentHP;
+                player.currentHP = std::min(player.maxHP,
+                    static_cast<uint8_t>(player.currentHP + heal));
+                uint8_t actualHeal = player.currentHP - oldHP;
+                player.inventory.removeItem(slot.id, 1);
+                sendInventorySync(fd, player.inventory);
+                sendHealthUpdate(fd, player.currentHP, player.maxHP);
+                auto def = getItemDef(slot.id);
+                sendSystemMessage(fd, "You eat the " + std::string(def.name) +
+                    " and heal " + std::to_string(actualHeal) + " HP.");
+            } else {
+                sendSystemMessage(fd, "You can't use that.");
+            }
+            break;
+        }
         default:
+            break;
+        }
+        break;
+    }
+
+    case ClientOpcode::ShopAction: {
+        if (len < 3) return;
+        auto shopAction = static_cast<ShopActionType>(payload[0]);
+        uint16_t itemId = payload[1] | (static_cast<uint16_t>(payload[2]) << 8);
+
+        switch (shopAction) {
+        case ShopActionType::Buy: {
+            // Find item in shop stock
+            const ShopItem* shopItem = nullptr;
+            for (const auto& si : GENERAL_STORE_STOCK) {
+                if (si.itemId == itemId) { shopItem = &si; break; }
+            }
+            if (!shopItem) {
+                sendSystemMessage(fd, "That item is not in stock.");
+                break;
+            }
+            if (player.gold < shopItem->buyPrice) {
+                sendSystemMessage(fd, "You don't have enough gold.");
+                break;
+            }
+            bool added = player.inventory.addItem(shopItem->itemId, 1);
+            if (!added) {
+                sendSystemMessage(fd, "Inventory full!");
+                break;
+            }
+            player.gold -= shopItem->buyPrice;
+            auto def = getItemDef(shopItem->itemId);
+            sendSystemMessage(fd, "You buy " + std::string(def.name) +
+                " for " + std::to_string(shopItem->buyPrice) + " gold.");
+            sendInventorySync(fd, player.inventory);
+            sendGoldUpdate(fd, player.gold);
+            break;
+        }
+        case ShopActionType::Sell: {
+            // Check player has the item
+            auto invSlot = player.inventory.findItem(itemId);
+            if (invSlot < 0) {
+                sendSystemMessage(fd, "You don't have that item.");
+                break;
+            }
+            // Find sell price from shop stock
+            uint16_t sellPrice = 0;
+            for (const auto& si : GENERAL_STORE_STOCK) {
+                if (si.itemId == itemId) { sellPrice = si.sellPrice; break; }
+            }
+            if (sellPrice == 0) {
+                // Use item value / 2 as fallback
+                auto def = getItemDef(itemId);
+                sellPrice = std::max(static_cast<uint16_t>(1), static_cast<uint16_t>(def.value / 2));
+            }
+            player.inventory.removeItem(itemId, 1);
+            player.gold += sellPrice;
+            auto def = getItemDef(itemId);
+            sendSystemMessage(fd, "You sell " + std::string(def.name) +
+                " for " + std::to_string(sellPrice) + " gold.");
+            sendInventorySync(fd, player.inventory);
+            sendGoldUpdate(fd, player.gold);
+            break;
+        }
+        case ShopActionType::Close:
+            player.shopOpen = false;
+            sendSystemMessage(fd, "You close the shop.");
             break;
         }
         break;
@@ -839,7 +1082,10 @@ int main(int argc, char* argv[]) {
             sendSystemMessage(client_fd, "Welcome to Erynfall!");
             sendPositionUpdate(client_fd, p.position);
             sendInventorySync(client_fd, p.inventory);
+            sendEquipmentSync(client_fd, p.equipment);
             sendSkillsSync(client_fd, p.skills);
+            sendGoldUpdate(client_fd, p.gold);
+            sendHealthUpdate(client_fd, p.currentHP, p.maxHP);
 
             // Send tree locations
             for (const auto& obj : objects.objects()) {
@@ -871,14 +1117,17 @@ int main(int argc, char* argv[]) {
                     player.target = player.position;
                     player.inCombat = false;
                     player.attackingNpcId = 0;
+                    player.chopping = false;
 
                     // Restore HP to full
-                    auto& hp = player.skills.getMutable(Skill::Hitpoints);
-                    hp.level = 10;
-                    hp.xp = 1154; // Level 10 XP
+                    player.recalcMaxHP();
+                    player.currentHP = player.maxHP;
 
                     sendPositionUpdate(fd, player.position);
                     sendSkillsSync(fd, player.skills);
+                    sendEquipmentSync(fd, player.equipment);
+                    sendGoldUpdate(fd, player.gold);
+                    sendHealthUpdate(fd, player.currentHP, player.maxHP);
                     sendSystemMessage(fd, "You respawn at home.");
                 }
                 ++it;

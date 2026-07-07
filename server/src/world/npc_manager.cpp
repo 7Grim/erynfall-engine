@@ -26,6 +26,9 @@ void NPCManager::initialize() {
     createNpc(NPCType::CHICKEN, 16, 10);
     createNpc(NPCType::CHICKEN, 18, 12);
     createNpc(NPCType::CHICKEN, 17, 9);
+
+    // Phase 4: Spawn shopkeeper near center
+    createNpc(NPCType::SHOPKEEPER, 14, 14);
     
     std::cout << "[World] Spawned " << npcs_.size() << " NPCs" << std::endl;
 }

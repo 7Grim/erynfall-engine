@@ -26,6 +26,7 @@ add_executable(erynfall-server
     ${CMAKE_SOURCE_DIR}/src/db/sqlite_db.cpp
     ${CMAKE_SOURCE_DIR}/src/game/inventory.cpp
     ${CMAKE_SOURCE_DIR}/src/game/skill_set.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/equipment.cpp
 )
 
 target_include_directories(erynfall-server PRIVATE

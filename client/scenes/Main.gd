@@ -1,7 +1,8 @@
 extends Node3D
 
-## Main game scene — Phase 3: The Fight.
+## Main game scene — Phase 4: The Gear.
 ## Trees, woodcutting, inventory, skills, NPCs, combat, death.
+## Equipment, shops, food, gold, HP system.
 ## GDScript bootstrap — creates all nodes at runtime.
 
 const GRID_SIZE := 30
@@ -33,6 +34,9 @@ var chop_label: Label
 var msg_log: Label
 var combat_overlay: CanvasLayer
 var death_screen: CanvasLayer
+var equipment_panel: PanelContainer  # Phase 4
+var shop_panel: CanvasLayer  # Phase 4
+var _shop_visible := false  # Phase 4
 
 var tiles: Dictionary = {}
 var tree_tiles: Dictionary = {}  # Vector2i -> [obj_id, tree_type]
@@ -53,7 +57,7 @@ func _ready() -> void:
 	_generate_map()
 	_spawn_trees()
 	_connect_signals()
-	print("[Main] Phase 3 initialized - trees, NPCs, combat, death")
+	print("[Main] Phase 4 initialized - gear, shops, food, gold")
 
 func _bootstrap_scene() -> void:
 	# GameTick
@@ -175,6 +179,14 @@ func _bootstrap_scene() -> void:
 	hp_label.text = "10/10"
 	hp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hp_bar.add_child(hp_label)
+	# Phase 4: Gold label
+	var gold_label = Label.new()
+	gold_label.name = "GoldLabel"
+	gold_label.text = "Gold: 0"
+	gold_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	gold_label.add_theme_font_size_override("font_size", 11)
+	gold_label.add_theme_color_override("font_color", Color(0.85, 0.75, 0.20))
+	hp_panel.add_child(gold_label)
 	# Combat label — below HP bar
 	var combat_label = Label.new()
 	combat_label.name = "CombatLabel"
@@ -227,7 +239,19 @@ func _bootstrap_scene() -> void:
 	timer_label.text = "Respawning in 5..."
 	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	death_panel.add_child(timer_label)
-	
+
+	# Phase 4: Equipment Panel (right side)
+	equipment_panel = PanelContainer.new()
+	equipment_panel.name = "EquipmentPanel"
+	equipment_panel.set_script(load("res://scenes/EquipmentPanel.gd"))
+	ui.add_child(equipment_panel)
+
+	# Phase 4: Shop Panel (overlay)
+	shop_panel = CanvasLayer.new()
+	shop_panel.name = "ShopPanel"
+	shop_panel.set_script(load("res://scenes/ShopPanel.gd"))
+	ui.add_child(shop_panel)
+
 	# Chop label
 	chop_label = Label.new()
 	chop_label.name = "ChopLabel"
@@ -333,10 +357,19 @@ func _connect_signals() -> void:
 	network.system_message.connect(_on_system_message)
 	network.position_update.connect(_on_position_update)
 	network.inventory_sync.connect(_on_inventory_sync)
+	# Phase 4: inventory equip/use/eat actions
+	inventory_panel.action_requested.connect(_on_inventory_action)
 	network.skill_update.connect(_on_skill_update)
 	network.skills_sync.connect(_on_skills_sync)
 	network.animation.connect(_on_animation)
 	network.npc_update.connect(_on_npc_update)
+	# Phase 4: equipment, gold, health, shop
+	network.equipment_sync.connect(_on_equipment_sync)
+	network.gold_update.connect(_on_gold_update)
+	network.health_update.connect(_on_health_update)
+	network.shop_open.connect(_on_shop_open)
+	shop_panel.buy_requested.connect(_on_buy_requested)
+	shop_panel.sell_requested.connect(_on_sell_requested)
 
 func _on_tick() -> void:
 	player.tick_move()
@@ -348,10 +381,18 @@ func _on_tick() -> void:
 			chop_label.visible = false
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Phase 4: Escape closes shop
+	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+		if _shop_visible:
+			shop_panel.close_shop()
+			_shop_visible = false
+			return
 	if event is InputEventMouseButton:
 		var mb = event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
 			_handle_click()
+		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			_handle_right_click()
 
 func _process(_delta: float) -> void:
 	var camera_3d = get_viewport().get_camera_3d()
@@ -431,6 +472,11 @@ func _handle_click() -> void:
 		chop_label.visible = false
 	player.walk_to(tile)
 
+func _handle_right_click() -> void:
+	# Phase 4: right-click could open context menus
+	# For now, eating food and equipping is via inventory panel clicks
+	pass
+
 func _world_to_tile(world_pos: Vector3) -> Vector2i:
 	var offset = float(GRID_SIZE) * TILE_SIZE / 2.0
 	return Vector2i(
@@ -462,6 +508,9 @@ func _on_position_update(x: int, y: int) -> void:
 
 func _on_inventory_sync(slots: Array) -> void:
 	inventory_panel.update_inventory(slots)
+
+func _on_inventory_action(action: int, slot: int) -> void:
+	network.send_inventory_action(action, slot)
 
 func _on_skill_update(skill_id: int, level: int, xp: int) -> void:
 	skills_panel.update_skill(skill_id, level, xp)
@@ -510,6 +559,39 @@ func _on_npc_update(npc_id: int, npc_type: int, x: int, y: int, hp: int, max_hp:
 	# Track NPC tile positions
 	if alive:
 		npc_tiles[Vector2i(x, y)] = npc_id
+
+# Phase 4: Equipment sync
+func _on_equipment_sync(slots: Array) -> void:
+	equipment_panel.update_equipment(slots)
+
+# Phase 4: Gold update
+func _on_gold_update(gold: int) -> void:
+	if _shop_visible:
+		shop_panel.update_gold(gold)
+	var gold_label = combat_overlay.get_node_or_null("HPPanel/GoldLabel") as Label
+	if gold_label:
+		gold_label.text = "Gold: %d" % gold
+
+# Phase 4: Health update
+func _on_health_update(current_hp: int, max_hp: int) -> void:
+	_player_hp = current_hp
+	_player_max_hp = max_hp
+	combat_overlay.update_hp(current_hp, max_hp)
+
+# Phase 4: Shop opened
+func _on_shop_open(items: Array) -> void:
+	_shop_visible = true
+	shop_panel.open_shop(items, 0)  # Gold will come from next gold_update
+
+# Phase 4: Buy from shop
+func _on_buy_requested(item_id: int) -> void:
+	network.send_shop_action(0, item_id)  # ShopActionType::Buy = 0
+
+# Phase 4: Sell to shop (sell selected inventory item)
+func _on_sell_requested(_item_id: int) -> void:
+	# For now, sell the first item in inventory
+	# TODO: proper inventory selection UI
+	network.send_shop_action(1, 0)  # ShopActionType::Sell = 1
 
 func _on_level_up(skill_id: int, level: int) -> void:
 	var skill_names := [

@@ -11,6 +11,7 @@ enum NPCType : uint8_t {
     GOBLIN = 0,
     COW    = 1,
     CHICKEN = 2,
+    SHOPKEEPER = 3,  // Phase 4: shop NPC (non-hostile)
 };
 
 // NPC definition — stats and behavior per type
@@ -82,9 +83,25 @@ inline constexpr NPCDef NPC_DEFS[] = {
         2,           // wander radius
         240, 230, 200, // light tan body
     },
+    // SHOPKEEPER (Phase 4: non-hostile shop NPC)
+    {
+        NPCType::SHOPKEEPER, "Shopkeeper",
+        0,           // combat level (civilian)
+        10,          // hitpoints (not attackable)
+        0,           // max hit (deals no damage)
+        99,          // attack speed (doesn't fight back)
+        0,           // attack range (doesn't fight)
+        0,           // attack XP
+        0,           // death XP
+        0,           // respawn ticks (doesn't respawn — persistent)
+        {0, 0, 0, 0}, // no drops
+        {0, 0, 0, 0},
+        0,           // wander radius (stays in place)
+        60, 60, 180, // blue body (distinctive)
+    },
 };
 
-inline constexpr int NPC_DEF_COUNT = 3;
+inline constexpr int NPC_DEF_COUNT = 4;
 
 inline const NPCDef& getNPCDef(NPCType type) {
     return NPC_DEFS[static_cast<int>(type)];

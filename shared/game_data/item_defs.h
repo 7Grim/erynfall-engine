@@ -75,6 +75,25 @@ enum ItemID : uint16_t {
     COOKED_LOBSTER = 115,
     COOKED_SWORDFISH = 116,
 
+    // Pickaxes
+    COPPER_PICKAXE = 200,
+    IRON_PICKAXE   = 201,
+    STEEL_PICKAXE  = 202,
+
+    // Ores
+    COPPER_ORE     = 210,
+    IRON_ORE       = 211,
+    GOLD_ORE       = 212,
+    MITHRIL_ORE    = 213,
+
+    // Raw fish (caught via Fishing)
+    RAW_SHRIMP     = 300,
+    RAW_SARDINE    = 301,
+    RAW_TROUT      = 302,
+
+    // Fishing rod
+    FISHING_ROD    = 310,
+
     // Misc
     COINS         = 998,
 };
@@ -127,6 +146,79 @@ inline constexpr std::array<AxeDef, 7> AXE_DEFS = {{
     { "Adamant axe",4, 30,  ItemID::ADAMANT_AXE  },
     { "Rune axe",    5, 40,  ItemID::RUNE_AXE    },
     { "Dragon axe", 6, 60,  ItemID::DRAGON_AXE   },
+}};
+
+// ---------------------------------------------------------------
+// Mining: rocks + pickaxes + ores
+// ---------------------------------------------------------------
+
+enum class RockType : uint8_t {
+    Copper   = 0,
+    Iron     = 1,
+    Gold     = 2,
+    Mithril  = 3,
+};
+
+struct RockDef {
+    RockType rockType;
+    const char* name;
+    int miningLevel;          // Required mining level
+    int mineTicksMin;         // Min ticks per successful mine
+    int mineTicksMax;         // Max ticks per successful mine
+    uint16_t oreItem;         // Item ID of ore produced
+    uint32_t xpPerMine;       // XP granted per successful mine
+    int hp;                   // Mines before depleted
+    int respawnTicks;         // Ticks to respawn after depletion
+};
+
+// All rock definitions (indexable by RockType)
+inline constexpr std::array<RockDef, 4> ROCK_DEFS = {{
+    { RockType::Copper,  "Copper rock",   1,   4,  8,  ItemID::COPPER_ORE,   20,   3,  40  },
+    { RockType::Iron,    "Iron rock",    10,   6, 12,  ItemID::IRON_ORE,     35,   4,  60  },
+    { RockType::Gold,    "Gold rock",    30,  10, 18,  ItemID::GOLD_ORE,     70,   5,  90  },
+    { RockType::Mithril, "Mithril rock", 45,  14, 24,  ItemID::MITHRIL_ORE, 100,   6, 120 },
+}};
+
+// Pickaxe definitions
+struct PickaxeDef {
+    const char* name;
+    int miningBonus;         // Reduces mine ticks
+    int equipLevel;          // Required attack level to equip
+    uint16_t itemId;
+};
+
+inline constexpr std::array<PickaxeDef, 3> PICKAXE_DEFS = {{
+    { "Copper pickaxe",  0,  1, ItemID::COPPER_PICKAXE },
+    { "Iron pickaxe",    1,  5, ItemID::IRON_PICKAXE   },
+    { "Steel pickaxe",   2, 20, ItemID::STEEL_PICKAXE  },
+}};
+
+// ---------------------------------------------------------------
+// Fishing: fishing spots + raw fish + rod
+// ---------------------------------------------------------------
+
+enum class FishingSpotType : uint8_t {
+    ShrimpPool  = 0,
+    SardinePool = 1,
+    TroutPool   = 2,
+};
+
+struct FishingSpotDef {
+    FishingSpotType spotType;
+    const char* name;
+    int fishingLevel;        // Required fishing level
+    int fishTicksMin;        // Min ticks per catch
+    int fishTicksMax;        // Max ticks per catch
+    std::array<uint16_t, 2> fishItem;  // Possible fish items (index 0 = common)
+    uint32_t xpPerCatch;     // XP granted per catch
+    int respawnTicks;        // Ticks before the spot can be fished again
+};
+
+// All fishing spot definitions (indexable by FishingSpotType)
+inline constexpr std::array<FishingSpotDef, 3> FISHING_SPOT_DEFS = {{
+    { FishingSpotType::ShrimpPool,  "Fishing spot (shrimp)",   1,  4,  8,  { ItemID::RAW_SHRIMP,  0             },  10, 30 },
+    { FishingSpotType::SardinePool, "Fishing spot (sardine)",  5,  6, 12,  { ItemID::RAW_SARDINE, ItemID::RAW_SHRIMP },  20, 30 },
+    { FishingSpotType::TroutPool,   "Fishing spot (trout)",   20,  8, 16,  { ItemID::RAW_TROUT,   ItemID::RAW_SARDINE },  35, 40 },
 }};
 
 // Food definitions (for healing)
@@ -233,6 +325,21 @@ inline constexpr ItemDef getItemDef(uint16_t id) {
         case ItemID::COOKED_SALMON:     return { id, "Salmon (cooked)",     false, 0xFF, 15  };
         case ItemID::COOKED_LOBSTER:    return { id, "Lobster (cooked)",    false, 0xFF, 30  };
         case ItemID::COOKED_SWORDFISH:  return { id, "Swordfish (cooked)",  false, 0xFF, 50  };
+        // Pickaxes
+        case ItemID::COPPER_PICKAXE: return { id, "Copper pickaxe", false, 3, 16   };
+        case ItemID::IRON_PICKAXE:   return { id, "Iron pickaxe",   false, 3, 56   };
+        case ItemID::STEEL_PICKAXE:  return { id, "Steel pickaxe",  false, 3, 200  };
+        // Ores
+        case ItemID::COPPER_ORE:  return { id, "Copper ore",  false, 0xFF, 5   };
+        case ItemID::IRON_ORE:    return { id, "Iron ore",    false, 0xFF, 15  };
+        case ItemID::GOLD_ORE:    return { id, "Gold ore",    false, 0xFF, 50  };
+        case ItemID::MITHRIL_ORE: return { id, "Mithril ore", false, 0xFF, 100 };
+        // Raw fish
+        case ItemID::RAW_SHRIMP:  return { id, "Raw shrimp",  false, 0xFF, 5   };
+        case ItemID::RAW_SARDINE: return { id, "Raw sardine", false, 0xFF, 10  };
+        case ItemID::RAW_TROUT:   return { id, "Raw trout",   false, 0xFF, 20  };
+        // Fishing rod
+        case ItemID::FISHING_ROD: return { id, "Fishing rod", false, 3, 30  };
         // Coins
         case ItemID::COINS:       return { id, "Coins",             true,  0xFF, 1    };
         default:                  return { id, "Unknown item",      false, 0xFF, 0    };

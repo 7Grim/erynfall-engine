@@ -16,9 +16,16 @@ const ITEM_NAMES := {
 	70: "Bronze gloves", 71: "Iron gloves",
 	80: "Bronze boots", 81: "Iron boots",
 	90: "Amulet of strength", 91: "Amulet of defence",
-	110: "Cooked shrimp", 112: "Cooked sardine",
-	113: "Cooked trout", 114: "Cooked salmon",
-	115: "Cooked lobster", 116: "Cooked swordfish",
+	100: "Shrimp", 101: "Anchovies", 102: "Sardine",
+	103: "Trout", 104: "Salmon", 105: "Lobster", 106: "Swordfish",
+	110: "Cooked shrimp", 111: "Cooked anchovies",
+	112: "Cooked sardine", 113: "Cooked trout",
+	114: "Cooked salmon", 115: "Cooked lobster",
+	116: "Cooked swordfish",
+	200: "Copper pickaxe", 201: "Iron pickaxe", 202: "Steel pickaxe",
+	210: "Copper ore", 211: "Iron ore", 212: "Gold ore", 213: "Mithril ore",
+	300: "Raw shrimp", 301: "Raw sardine", 302: "Raw trout",
+	310: "Fishing rod",
 	998: "Coins",
 }
 
@@ -53,12 +60,35 @@ const ITEM_COLORS := {
 	81: Color(0.70, 0.70, 0.70), # Iron boots
 	90: Color(0.80, 0.30, 0.30), # Amulet of strength
 	91: Color(0.30, 0.50, 0.80), # Amulet of defence
+	# Raw food
+	100: Color(0.6, 0.5, 0.4),     # Shrimp
+	101: Color(0.55, 0.45, 0.35), # Anchovies
+	102: Color(0.5, 0.45, 0.4),   # Sardine
+	103: Color(0.55, 0.5, 0.45),  # Trout
+	104: Color(0.7, 0.55, 0.35),  # Salmon
+	105: Color(0.65, 0.4, 0.35),  # Lobster
+	106: Color(0.5, 0.4, 0.3),    # Swordfish
 	110: Color(0.6, 0.8, 0.3),     # Cooked shrimp
 	112: Color(0.5, 0.7, 0.4),     # Cooked sardine
 	113: Color(0.55, 0.75, 0.35), # Cooked trout
 	114: Color(0.7, 0.6, 0.3),     # Cooked salmon
 	115: Color(0.6, 0.4, 0.3),     # Cooked lobster
 	116: Color(0.5, 0.35, 0.25),   # Cooked swordfish
+	# Phase 5: Pickaxes
+	200: Color(0.72, 0.53, 0.22), # Copper pickaxe — bronze
+	201: Color(0.70, 0.70, 0.70), # Iron pickaxe — gray
+	202: Color(0.65, 0.65, 0.68), # Steel pickaxe — silver
+	# Phase 5: Ores
+	210: Color(0.55, 0.35, 0.25), # Copper ore
+	211: Color(0.45, 0.45, 0.45), # Iron ore
+	212: Color(0.80, 0.70, 0.20), # Gold ore
+	213: Color(0.35, 0.40, 0.55), # Mithril ore
+	# Phase 5: Raw fish
+	300: Color(0.7, 0.6, 0.5),     # Raw shrimp
+	301: Color(0.6, 0.55, 0.5),    # Raw sardine
+	302: Color(0.55, 0.5, 0.45),   # Raw trout
+	# Phase 5: Fishing rod
+	310: Color(0.40, 0.25, 0.10),  # Fishing rod — wood
 	998: Color(0.85, 0.75, 0.20), # Coins — gold
 }
 

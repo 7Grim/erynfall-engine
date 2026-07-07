@@ -52,6 +52,16 @@ struct ConnectedPlayer {
     int chopsRemaining = 0;
     int chopTimer = 0;
 
+    // Mining action state
+    bool mining = false;
+    uint32_t miningObjectId = 0;
+    int mineTimer = 0;
+
+    // Fishing action state
+    bool fishing = false;
+    uint32_t fishingObjectId = 0;
+    int fishTimer = 0;
+
     // Phase 3: Combat state
     bool inCombat = false;
     uint32_t attackingNpcId = 0;       // Which NPC we're attacking
@@ -71,6 +81,8 @@ struct ConnectedPlayer {
         inventory.addItem(ItemID::BRONZE_AXE, 1);
         inventory.addItem(ItemID::BRONZE_SWORD, 1);
         inventory.addItem(ItemID::BRONZE_SHIELD, 1);
+        inventory.addItem(ItemID::COPPER_PICKAXE, 1);
+        inventory.addItem(ItemID::FISHING_ROD, 1);
         gold = 50;  // Starting gold to buy food/gear
         maxHP = skills.level(Skill::Hitpoints);
         currentHP = maxHP;
@@ -278,15 +290,18 @@ static bool sendPositionUpdate(int fd, const Position& pos) {
 
 // Send world object update (add/remove tree)
 static bool sendWorldObjectUpdate(int fd, uint8_t action, const WorldObject& obj) {
-    uint8_t buf[7];
+    uint8_t buf[9];
     buf[0] = action;
     buf[1] = static_cast<uint8_t>(obj.id & 0xFF);
     buf[2] = static_cast<uint8_t>((obj.id >> 8) & 0xFF);
     buf[3] = static_cast<uint8_t>((obj.id >> 16) & 0xFF);
     buf[4] = static_cast<uint8_t>((obj.id >> 24) & 0xFF);
-    buf[5] = static_cast<uint8_t>(obj.treeType);
-    buf[6] = 0;
-    return sendPacket(fd, ServerOpcode::GroundItemAdd, buf, 7);
+    // Pack objectType (high nibble) + subtype (low nibble) for the client
+    buf[5] = static_cast<uint8_t>((static_cast<uint8_t>(obj.objectType) << 4) | (obj.subtype & 0x0F));
+    buf[6] = static_cast<uint8_t>(obj.position.x);
+    buf[7] = static_cast<uint8_t>(obj.position.y);
+    buf[8] = 0;
+    return sendPacket(fd, ServerOpcode::GroundItemAdd, buf, 9);
 }
 
 // Check if player has an axe (returns best bonus)
@@ -299,6 +314,18 @@ static int getAxeBonus(const Inventory& inv) {
         }
     }
     return 0;
+}
+
+// Check if player has a pickaxe (returns best bonus)
+static int getPickaxeBonus(const Inventory& inv) {
+    for (int i = 0; i < inv.size(); ++i) {
+        auto& slot = inv.slot(i);
+        if (slot.quantity == 0) continue;
+        for (const auto& pick : PICKAXE_DEFS) {
+            if (slot.id == pick.itemId) return pick.miningBonus;
+        }
+    }
+    return -1;  // No pickaxe
 }
 
 // Calculate player max hit (Phase 4: uses equipment bonuses)
@@ -326,7 +353,8 @@ static void resolveWoodcutting(ConnectedPlayer& player, WorldObjectManager& obje
     if (!player.chopping || player.dead) return;
 
     WorldObject* obj = objects.mutableObjectById(player.choppingObjectId);
-    if (!obj || obj->depleted || obj->id != player.choppingObjectId) {
+    if (!obj || obj->objectType != ObjectType::Tree || obj->depleted ||
+        obj->id != player.choppingObjectId) {
         player.chopping = false;
         sendSystemMessage(player.fd, "Tree is gone.");
         return;
@@ -341,7 +369,7 @@ static void resolveWoodcutting(ConnectedPlayer& player, WorldObjectManager& obje
     player.chopTimer--;
     if (player.chopTimer > 0) return;
 
-    const auto& treeDef = TREE_DEFS[static_cast<int>(obj->treeType)];
+    const auto& treeDef = TREE_DEFS[obj->subtype];
 
     bool leveled = player.skills.addXP(Skill::Woodcutting, treeDef.xpPerChop);
     auto wcState = player.skills.get(Skill::Woodcutting);
@@ -366,10 +394,131 @@ static void resolveWoodcutting(ConnectedPlayer& player, WorldObjectManager& obje
         return;
     }
 
-    auto& def = TREE_DEFS[static_cast<int>(obj->treeType)];
+    auto& def = TREE_DEFS[obj->subtype];
     int baseTicks = def.chopTicksMin + (std::rand() % (def.chopTicksMax - def.chopTicksMin + 1));
     int bonus = getAxeBonus(player.inventory);
     player.chopTimer = std::max(1, baseTicks - bonus * 2);
+}
+
+// Resolve mining action on tick
+static void resolveMining(ConnectedPlayer& player, WorldObjectManager& objects,
+                          uint64_t tick) {
+    if (!player.mining || player.dead) return;
+
+    WorldObject* obj = objects.mutableObjectById(player.miningObjectId);
+    if (!obj || obj->objectType != ObjectType::Rock || obj->depleted ||
+        obj->id != player.miningObjectId) {
+        player.mining = false;
+        sendSystemMessage(player.fd, "The rock is gone.");
+        return;
+    }
+
+    if (player.position.tileDistanceTo(obj->position) > 1) {
+        player.mining = false;
+        sendSystemMessage(player.fd, "You moved too far.");
+        return;
+    }
+
+    player.mineTimer--;
+    if (player.mineTimer > 0) return;
+
+    const auto& rockDef = ROCK_DEFS[obj->subtype];
+
+    bool leveled = player.skills.addXP(Skill::Mining, rockDef.xpPerMine);
+    auto mineState = player.skills.get(Skill::Mining);
+    sendSkillUpdate(player.fd, Skill::Mining, mineState.level, mineState.xp);
+
+    if (leveled) {
+        sendSystemMessage(player.fd, "Congratulations! Your Mining level is now " +
+                          std::to_string(mineState.level) + "!");
+    }
+
+    bool added = player.inventory.addItem(rockDef.oreItem, 1);
+    sendInventorySync(player.fd, player.inventory);
+    if (added) {
+        sendSystemMessage(player.fd, std::string("You mine some ") +
+                          getItemDef(rockDef.oreItem).name + ".");
+    } else {
+        sendSystemMessage(player.fd, "Inventory full!");
+    }
+
+    bool depleted = objects.mine(obj->id, player.fd);
+
+    if (depleted) {
+        // Schedule respawn
+        obj->respawnTick = tick + static_cast<uint64_t>(rockDef.respawnTicks);
+        sendSystemMessage(player.fd, std::string("The ") + rockDef.name + " has been depleted.");
+        player.mining = false;
+        return;
+    }
+
+    int baseTicks = rockDef.mineTicksMin +
+        (std::rand() % (rockDef.mineTicksMax - rockDef.mineTicksMin + 1));
+    int bonus = getPickaxeBonus(player.inventory);
+    player.mineTimer = std::max(1, baseTicks - bonus * 2);
+}
+
+// Resolve fishing action on tick
+static void resolveFishing(ConnectedPlayer& player, WorldObjectManager& objects,
+                           uint64_t tick) {
+    if (!player.fishing || player.dead) return;
+
+    WorldObject* obj = objects.mutableObjectById(player.fishingObjectId);
+    if (!obj || obj->objectType != ObjectType::FishingSpot || obj->depleted ||
+        obj->id != player.fishingObjectId) {
+        player.fishing = false;
+        sendSystemMessage(player.fd, "The fishing spot is gone.");
+        return;
+    }
+
+    if (player.position.tileDistanceTo(obj->position) > 1) {
+        player.fishing = false;
+        sendSystemMessage(player.fd, "You moved too far.");
+        return;
+    }
+
+    player.fishTimer--;
+    if (player.fishTimer > 0) return;
+
+    const auto& spotDef = FISHING_SPOT_DEFS[obj->subtype];
+
+    // Determine which fish we catch (80% common, 20% uncommon if defined)
+    uint16_t fishItem = spotDef.fishItem[0];
+    if (spotDef.fishItem[1] != 0 && (std::rand() % 100) < 20) {
+        fishItem = spotDef.fishItem[1];
+    }
+
+    bool leveled = player.skills.addXP(Skill::Fishing, spotDef.xpPerCatch);
+    auto fishState = player.skills.get(Skill::Fishing);
+    sendSkillUpdate(player.fd, Skill::Fishing, fishState.level, fishState.xp);
+
+    if (leveled) {
+        sendSystemMessage(player.fd, "Congratulations! Your Fishing level is now " +
+                          std::to_string(fishState.level) + "!");
+    }
+
+    bool added = player.inventory.addItem(fishItem, 1);
+    sendInventorySync(player.fd, player.inventory);
+    if (added) {
+        sendSystemMessage(player.fd, std::string("You catch a ") +
+                          getItemDef(fishItem).name + ".");
+    } else {
+        sendSystemMessage(player.fd, "Inventory full!");
+    }
+
+    // Spot depletes after each catch (hp is 1)
+    bool depleted = objects.fish(obj->id, player.fd);
+
+    if (depleted) {
+        obj->respawnTick = tick + static_cast<uint64_t>(spotDef.respawnTicks);
+        sendSystemMessage(player.fd, "The fishing spot moves away.");
+        player.fishing = false;
+        return;
+    }
+
+    int baseTicks = spotDef.fishTicksMin +
+        (std::rand() % (spotDef.fishTicksMax - spotDef.fishTicksMin + 1));
+    player.fishTimer = std::max(1, baseTicks);
 }
 
 // Resolve combat on tick — player attacks NPC
@@ -541,6 +690,8 @@ static void resolveNpcCombat(NPCManager& npcs,
                 player.deathTimer = 0;
                 player.inCombat = false;
                 player.chopping = false;
+                player.mining = false;
+                player.fishing = false;
                 npc.attackingPlayerFd = 0;
 
                 sendSystemMessage(player.fd, "Oh dear, you are dead!");
@@ -573,6 +724,8 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
 
         // Cancel actions on move
         if (player.chopping) player.chopping = false;
+        if (player.mining) player.mining = false;
+        if (player.fishing) player.fishing = false;
         if (player.inCombat) {
             player.inCombat = false;
             // Release NPC
@@ -607,38 +760,126 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
         }
 
         if (obj->depleted) {
-            sendSystemMessage(fd, "The tree is still growing.");
+            if (obj->objectType == ObjectType::Tree)
+                sendSystemMessage(fd, "The tree is still growing.");
+            else if (obj->objectType == ObjectType::Rock)
+                sendSystemMessage(fd, "This rock has been depleted.");
+            else
+                sendSystemMessage(fd, "The fishing spot has moved away.");
             return;
         }
 
-        auto& treeDef = TREE_DEFS[static_cast<int>(obj->treeType)];
-        uint8_t wcLevel = player.skills.level(Skill::Woodcutting);
-        if (wcLevel < treeDef.woodcuttingLevel) {
-            sendSystemMessage(fd, "You need Woodcutting level " +
-                std::to_string(treeDef.woodcuttingLevel) + " to chop this.");
-            return;
+        // -----------------------------------------------------------
+        // Tree -> Woodcutting
+        // -----------------------------------------------------------
+        if (obj->objectType == ObjectType::Tree) {
+            auto& treeDef = TREE_DEFS[obj->subtype];
+            uint8_t wcLevel = player.skills.level(Skill::Woodcutting);
+            if (wcLevel < treeDef.woodcuttingLevel) {
+                sendSystemMessage(fd, "You need Woodcutting level " +
+                    std::to_string(treeDef.woodcuttingLevel) + " to chop this.");
+                return;
+            }
+
+            if (!player.inventory.hasItem(ItemID::BRONZE_AXE) &&
+                !player.inventory.hasItem(ItemID::IRON_AXE) &&
+                !player.inventory.hasItem(ItemID::STEEL_AXE) &&
+                !player.inventory.hasItem(ItemID::MITHRIL_AXE) &&
+                !player.inventory.hasItem(ItemID::ADAMANT_AXE) &&
+                !player.inventory.hasItem(ItemID::RUNE_AXE) &&
+                !player.inventory.hasItem(ItemID::DRAGON_AXE)) {
+                sendSystemMessage(fd, "You need an axe to chop trees.");
+                return;
+            }
+
+            // Cancel other actions
+            player.mining = false;
+            player.fishing = false;
+
+            player.chopping = true;
+            player.choppingObjectId = obj->id;
+
+            int baseTicks = treeDef.chopTicksMin +
+                (std::rand() % (treeDef.chopTicksMax - treeDef.chopTicksMin + 1));
+            int bonus = getAxeBonus(player.inventory);
+            player.chopTimer = std::max(1, baseTicks - bonus * 2);
+
+            sendAnimation(fd, 1, ox, oy);
+            break;
         }
 
-        if (!player.inventory.hasItem(ItemID::BRONZE_AXE) &&
-            !player.inventory.hasItem(ItemID::IRON_AXE) &&
-            !player.inventory.hasItem(ItemID::STEEL_AXE) &&
-            !player.inventory.hasItem(ItemID::MITHRIL_AXE) &&
-            !player.inventory.hasItem(ItemID::ADAMANT_AXE) &&
-            !player.inventory.hasItem(ItemID::RUNE_AXE) &&
-            !player.inventory.hasItem(ItemID::DRAGON_AXE)) {
-            sendSystemMessage(fd, "You need an axe to chop trees.");
-            return;
+        // -----------------------------------------------------------
+        // Rock -> Mining
+        // -----------------------------------------------------------
+        if (obj->objectType == ObjectType::Rock) {
+            auto& rockDef = ROCK_DEFS[obj->subtype];
+            uint8_t mineLevel = player.skills.level(Skill::Mining);
+            if (mineLevel < rockDef.miningLevel) {
+                sendSystemMessage(fd, "You need Mining level " +
+                    std::to_string(rockDef.miningLevel) + " to mine this rock.");
+                return;
+            }
+
+            if (!player.inventory.hasItem(ItemID::COPPER_PICKAXE) &&
+                !player.inventory.hasItem(ItemID::IRON_PICKAXE) &&
+                !player.inventory.hasItem(ItemID::STEEL_PICKAXE)) {
+                sendSystemMessage(fd, "You need a pickaxe to mine rocks.");
+                return;
+            }
+
+            // Cancel other actions
+            player.chopping = false;
+            player.fishing = false;
+
+            player.mining = true;
+            player.miningObjectId = obj->id;
+
+            int baseTicks = rockDef.mineTicksMin +
+                (std::rand() % (rockDef.mineTicksMax - rockDef.mineTicksMin + 1));
+            int bonus = getPickaxeBonus(player.inventory);
+            player.mineTimer = std::max(1, baseTicks - bonus * 2);
+
+            sendAnimation(fd, 3, ox, oy);  // anim_id=3 = mining
+            sendSystemMessage(fd, std::string("You swing your pickaxe at the ") +
+                              rockDef.name + ".");
+            break;
         }
 
-        player.chopping = true;
-        player.choppingObjectId = obj->id;
+        // -----------------------------------------------------------
+        // FishingSpot -> Fishing
+        // -----------------------------------------------------------
+        if (obj->objectType == ObjectType::FishingSpot) {
+            auto& spotDef = FISHING_SPOT_DEFS[obj->subtype];
+            uint8_t fishLevel = player.skills.level(Skill::Fishing);
+            if (fishLevel < spotDef.fishingLevel) {
+                sendSystemMessage(fd, "You need Fishing level " +
+                    std::to_string(spotDef.fishingLevel) + " to fish here.");
+                return;
+            }
 
-        int baseTicks = treeDef.chopTicksMin +
-            (std::rand() % (treeDef.chopTicksMax - treeDef.chopTicksMin + 1));
-        int bonus = getAxeBonus(player.inventory);
-        player.chopTimer = std::max(1, baseTicks - bonus * 2);
+            if (!player.inventory.hasItem(ItemID::FISHING_ROD)) {
+                sendSystemMessage(fd, "You need a fishing rod to fish.");
+                return;
+            }
 
-        sendAnimation(fd, 1, ox, oy);
+            // Cancel other actions
+            player.chopping = false;
+            player.mining = false;
+
+            player.fishing = true;
+            player.fishingObjectId = obj->id;
+
+            int baseTicks = spotDef.fishTicksMin +
+                (std::rand() % (spotDef.fishTicksMax - spotDef.fishTicksMin + 1));
+            player.fishTimer = std::max(1, baseTicks);
+
+            sendAnimation(fd, 4, ox, oy);  // anim_id=4 = fishing
+            sendSystemMessage(fd, std::string("You cast your line at the ") +
+                              spotDef.name + ".");
+            break;
+        }
+
+        sendSystemMessage(fd, "Nothing interesting there.");
         break;
     }
 
@@ -694,6 +935,8 @@ static void processPacket(int fd, uint8_t opcode, const uint8_t* payload, uint16
 
         // Cancel other actions
         if (player.chopping) player.chopping = false;
+        if (player.mining) player.mining = false;
+        if (player.fishing) player.fishing = false;
 
         // Start combat
         player.inCombat = true;
@@ -1004,6 +1247,44 @@ int main(int argc, char* argv[]) {
     objects.populateForest(treePositions, treeTypes);
     std::cout << "[World] Placed " << objects.count() << " trees" << std::endl;
 
+    // --- World Objects (Rocks - Mining area in the south) ---
+    std::vector<std::pair<int,int>> rockPositions = {
+        {3, 18}, {4, 18}, {5, 18}, {6, 18}, {7, 18},
+        {3, 19}, {4, 19}, {6, 19}, {7, 19},
+        {3, 20}, {5, 20}, {7, 20},
+        {4, 21}, {6, 21},
+        {5, 22}, {3, 22}, {7, 22},
+    };
+    std::vector<RockType> rockTypes;
+    for (size_t i = 0; i < rockPositions.size(); ++i) {
+        if (i < 6)
+            rockTypes.push_back(RockType::Copper);
+        else if (i < 11)
+            rockTypes.push_back(RockType::Iron);
+        else if (i < 14)
+            rockTypes.push_back(RockType::Gold);
+        else
+            rockTypes.push_back(RockType::Mithril);
+    }
+    objects.populateRocks(rockPositions, rockTypes);
+    std::cout << "[World] Placed " << rockPositions.size() << " mining rocks" << std::endl;
+
+    // --- World Objects (Fishing spots - Fishing area in the south-east) ---
+    std::vector<std::pair<int,int>> fishingPositions = {
+        {22, 20}, {23, 20}, {24, 21}, {25, 21}, {22, 22}, {25, 22},
+    };
+    std::vector<FishingSpotType> fishingTypes;
+    for (size_t i = 0; i < fishingPositions.size(); ++i) {
+        if (i < 2)
+            fishingTypes.push_back(FishingSpotType::ShrimpPool);
+        else if (i < 4)
+            fishingTypes.push_back(FishingSpotType::SardinePool);
+        else
+            fishingTypes.push_back(FishingSpotType::TroutPool);
+    }
+    objects.populateFishingSpots(fishingPositions, fishingTypes);
+    std::cout << "[World] Placed " << fishingPositions.size() << " fishing spots" << std::endl;
+
     // --- NPCs ---
     NPCManager npcs;
     npcs.initialize();
@@ -1118,6 +1399,8 @@ int main(int argc, char* argv[]) {
                     player.inCombat = false;
                     player.attackingNpcId = 0;
                     player.chopping = false;
+                    player.mining = false;
+                    player.fishing = false;
 
                     // Restore HP to full
                     player.recalcMaxHP();
@@ -1196,6 +1479,8 @@ int main(int argc, char* argv[]) {
         for (auto& [fd, player] : players) {
             if (player.dead) continue;
             resolveWoodcutting(player, objects, current_tick);
+            resolveMining(player, objects, current_tick);
+            resolveFishing(player, objects, current_tick);
             resolvePlayerCombat(player, npcs, groundItems, players);
         }
 

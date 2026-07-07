@@ -15,6 +15,10 @@ signal animation(anim_id: int, target_x: int, target_y: int)
 signal npc_update(npc_id: int, npc_type: int, x: int, y: int, hp: int, max_hp: int, alive: bool)
 signal tree_added(obj_id: int, tree_type: int, x: int, y: int)
 signal tree_removed(obj_id: int)
+signal rock_added(obj_id: int, rock_type: int, x: int, y: int)
+signal rock_removed(obj_id: int)
+signal fish_spot_added(obj_id: int, spot_type: int, x: int, y: int)
+signal fish_spot_removed(obj_id: int)
 signal equipment_sync(slots: Array)  # Phase 4: Array of {id, qty}
 signal gold_update(gold: int)         # Phase 4: player gold balance
 signal health_update(current_hp: int, max_hp: int)  # Phase 4: HP
@@ -145,17 +149,30 @@ func _handle_packet(opcode: int, payload: PackedByteArray) -> void:
 				var ty := payload[3] | (payload[4] << 8)
 				animation.emit(anim_id, tx, ty)
 		
-		0x88:  # GroundItemAdd (repurposed for tree sync)
-			if payload.size() >= 7:
+		0x88:  # GroundItemAdd (repurposed for world object sync)
+			if payload.size() >= 9:
 				var action := payload[0]  # 0=remove, 1=add
 				var obj_id := payload[1] | (payload[2] << 8) | (payload[3] << 16) | (payload[4] << 24)
-				var tree_type := payload[5]
-				# For now we don't have tile coords in tree sync — need to add
-				# The tree positions are hardcoded on client to match server
+				var type_pack := payload[5]
+				var obj_type := type_pack >> 4  # 0=tree, 1=rock, 2=fishing
+				var subtype := type_pack & 0x0F
+				var ox := payload[6]
+				var oy := payload[7]
+				
 				if action == 1:
-					tree_added.emit(obj_id, tree_type, 0, 0)
+					if obj_type == 0:
+						tree_added.emit(obj_id, subtype, ox, oy)
+					elif obj_type == 1:
+						rock_added.emit(obj_id, subtype, ox, oy)
+					elif obj_type == 2:
+						fish_spot_added.emit(obj_id, subtype, ox, oy)
 				else:
-					tree_removed.emit(obj_id)
+					if obj_type == 0:
+						tree_removed.emit(obj_id)
+					elif obj_type == 1:
+						rock_removed.emit(obj_id)
+					elif obj_type == 2:
+						fish_spot_removed.emit(obj_id)
 		
 		0x90:  # SystemMessage
 			if payload.size() >= 2:

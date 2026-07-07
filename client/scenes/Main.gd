@@ -40,10 +40,18 @@ var _shop_visible := false  # Phase 4
 
 var tiles: Dictionary = {}
 var tree_tiles: Dictionary = {}  # Vector2i -> [obj_id, tree_type]
+var rock_tiles: Dictionary = {}  # Phase 5: Vector2i -> [obj_id, rock_type]
+var fish_tiles: Dictionary = {}  # Phase 5: Vector2i -> [obj_id, spot_type]
 var npc_tiles: Dictionary = {}   # Vector2i -> npc_id
 var _chopping := false
 var _chop_target := Vector2i()
 var _chop_timer := 0.0
+var _mining := false  # Phase 5
+var _mine_target := Vector2i()
+var _mine_timer := 0.0
+var _fishing := false  # Phase 5
+var _fish_target := Vector2i()
+var _fish_timer := 0.0
 var _in_combat := false
 var _combat_target := ""
 var _dead := false
@@ -96,6 +104,18 @@ func _bootstrap_scene() -> void:
 	tree_manager.name = "TreeManager"
 	tree_manager.set_script(load("res://scenes/TreeManager.gd"))
 	add_child(tree_manager)
+	
+	# Phase 5: Rock Manager
+	var rock_manager = Node3D.new()
+	rock_manager.name = "RockManager"
+	rock_manager.set_script(load("res://scenes/RockManager.gd"))
+	add_child(rock_manager)
+	
+	# Phase 5: Fishing Spot Manager
+	var fish_manager = Node3D.new()
+	fish_manager.name = "FishSpotManager"
+	fish_manager.set_script(load("res://scenes/FishSpotManager.gd"))
+	add_child(fish_manager)
 	
 	# NPC Manager
 	npc_manager = Node3D.new()
@@ -367,6 +387,13 @@ func _connect_signals() -> void:
 	network.gold_update.connect(_on_gold_update)
 	network.health_update.connect(_on_health_update)
 	network.shop_open.connect(_on_shop_open)
+	# Phase 5: world objects (trees, rocks, fishing spots)
+	network.tree_added.connect(_on_tree_added)
+	network.tree_removed.connect(_on_tree_removed)
+	network.rock_added.connect(_on_rock_added)
+	network.rock_removed.connect(_on_rock_removed)
+	network.fish_spot_added.connect(_on_fish_spot_added)
+	network.fish_spot_removed.connect(_on_fish_spot_removed)
 
 func _deferred_connect() -> void:
 	# Phase 4: connect signals that require child scripts to be loaded
@@ -384,6 +411,16 @@ func _on_tick() -> void:
 		_chop_timer -= 0.6
 		if _chop_timer <= 0:
 			_chopping = false
+			chop_label.visible = false
+	if _mining:
+		_mine_timer -= 0.6
+		if _mine_timer <= 0:
+			_mining = false
+			chop_label.visible = false
+	if _fishing:
+		_fish_timer -= 0.6
+		if _fish_timer <= 0:
+			_fishing = false
 			chop_label.visible = false
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -418,6 +455,10 @@ func _process(_delta: float) -> void:
 	# Color highlight based on what's on the tile
 	if npc_tiles.has(tile):
 		highlight.set_highlight_color(Color(1.0, 0.2, 0.2, 0.5))  # Red for NPCs
+	elif rock_tiles.has(tile):
+		highlight.set_highlight_color(Color(0.55, 0.45, 0.35, 0.5))  # Brown for rocks
+	elif fish_tiles.has(tile):
+		highlight.set_highlight_color(Color(0.2, 0.5, 0.9, 0.5))  # Blue for fishing
 	elif tree_tiles.has(tile):
 		highlight.set_highlight_color(Color(0.8, 0.6, 0.2, 0.4))  # Orange for trees
 	else:
@@ -469,12 +510,52 @@ func _handle_click() -> void:
 		player.face_toward(tile)
 		return
 	
+	# Phase 5: Rock click? (mine)
+	if rock_tiles.has(tile):
+		var player_tile = player.tile_position()
+		var dist = abs(player_tile.x - tile.x) + abs(player_tile.y - tile.y)
+		if dist > 2:
+			_add_message("Too far away.")
+			return
+		network.send_action_object(0, tile.x, tile.y)
+		_add_message("You swing your pickaxe at the rock...")
+		_mining = true
+		_mine_target = tile
+		_mine_timer = 3.0
+		chop_label.visible = true
+		chop_label.text = "Mining..."
+		player.face_toward(tile)
+		return
+	
+	# Phase 5: Fishing spot click? (fish)
+	if fish_tiles.has(tile):
+		var player_tile = player.tile_position()
+		var dist = abs(player_tile.x - tile.x) + abs(player_tile.y - tile.y)
+		if dist > 2:
+			_add_message("Too far away.")
+			return
+		network.send_action_object(0, tile.x, tile.y)
+		_add_message("You cast your line...")
+		_fishing = true
+		_fish_target = tile
+		_fish_timer = 3.0
+		chop_label.visible = true
+		chop_label.text = "Fishing..."
+		player.face_toward(tile)
+		return
+	
 	# Walk
 	var type = tiles.get(tile, 0)
 	if type == 1:
 		return
 	if _chopping:
 		_chopping = false
+		chop_label.visible = false
+	if _mining:
+		_mining = false
+		chop_label.visible = false
+	if _fishing:
+		_fishing = false
 		chop_label.visible = false
 	player.walk_to(tile)
 
@@ -610,6 +691,49 @@ func _on_level_up(skill_id: int, level: int) -> void:
 	var name = skill_names[skill_id] if skill_id < skill_names.size() else "???"
 	level_up_notif.show_level_up(name, level)
 	_add_message("Congratulations! Your %s level is now %d!" % [name, level])
+
+# Phase 5: World object handlers
+func _on_tree_added(obj_id: int, tree_type: int, x: int, y: int) -> void:
+	tree_manager.add_tree(obj_id, tree_type, x, y, GRID_SIZE, TILE_SIZE)
+	tree_tiles[Vector2i(x, y)] = [obj_id, tree_type]
+
+func _on_tree_removed(obj_id: int) -> void:
+	tree_manager.remove_tree(obj_id)
+	# Remove from tile dict
+	for tile in tree_tiles.keys():
+		if tree_tiles[tile][0] == obj_id:
+			tree_tiles.erase(tile)
+			break
+
+func _on_rock_added(obj_id: int, rock_type: int, x: int, y: int) -> void:
+	var rm = get_node_or_null("RockManager")
+	if rm and rm.has_method("add_rock"):
+		rm.add_rock(obj_id, rock_type, x, y, GRID_SIZE, TILE_SIZE)
+	rock_tiles[Vector2i(x, y)] = [obj_id, rock_type]
+
+func _on_rock_removed(obj_id: int) -> void:
+	var rm = get_node_or_null("RockManager")
+	if rm and rm.has_method("remove_rock"):
+		rm.remove_rock(obj_id)
+	for tile in rock_tiles.keys():
+		if rock_tiles[tile][0] == obj_id:
+			rock_tiles.erase(tile)
+			break
+
+func _on_fish_spot_added(obj_id: int, spot_type: int, x: int, y: int) -> void:
+	var fm = get_node_or_null("FishSpotManager")
+	if fm and fm.has_method("add_spot"):
+		fm.add_spot(obj_id, spot_type, x, y, GRID_SIZE, TILE_SIZE)
+	fish_tiles[Vector2i(x, y)] = [obj_id, spot_type]
+
+func _on_fish_spot_removed(obj_id: int) -> void:
+	var fm = get_node_or_null("FishSpotManager")
+	if fm and fm.has_method("remove_spot"):
+		fm.remove_spot(obj_id)
+	for tile in fish_tiles.keys():
+		if fish_tiles[tile][0] == obj_id:
+			fish_tiles.erase(tile)
+			break
 
 func _add_message(msg: String) -> void:
 	_messages.append(msg)

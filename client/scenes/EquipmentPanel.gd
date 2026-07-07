@@ -9,31 +9,35 @@ const SLOT_NAMES := [
 ]
 
 const ITEM_NAMES := {
-	20: "Bronze sword", 21: "Iron sword",
-	22: "Bronze shield", 23: "Iron shield",
-	24: "Bronze platebody", 25: "Iron platebody",
-	26: "Bronze platelegs", 27: "Iron platelegs",
-	28: "Bronze helm", 29: "Iron helm",
-	30: "Bronze gloves", 31: "Iron gloves",
-	32: "Bronze boots", 33: "Iron boots",
+	20: "Bronze sword", 21: "Iron sword", 22: "Steel sword",
+	30: "Bronze shield", 31: "Iron shield",
+	40: "Bronze platebody", 41: "Iron platebody",
+	50: "Bronze platelegs", 51: "Iron platelegs",
+	60: "Bronze helm", 61: "Iron helm",
+	70: "Bronze gloves", 71: "Iron gloves",
+	80: "Bronze boots", 81: "Iron boots",
+	90: "Amulet of strength", 91: "Amulet of defence",
 	10: "Bronze axe", 11: "Iron axe",
 }
 
 const ITEM_COLORS := {
 	20: Color(0.72, 0.53, 0.22), # Bronze sword
 	21: Color(0.70, 0.70, 0.70), # Iron sword
-	22: Color(0.72, 0.53, 0.22), # Bronze shield
-	23: Color(0.70, 0.70, 0.70), # Iron shield
-	24: Color(0.72, 0.53, 0.22), # Bronze platebody
-	25: Color(0.70, 0.70, 0.70), # Iron platebody
-	26: Color(0.72, 0.53, 0.22), # Bronze platelegs
-	27: Color(0.70, 0.70, 0.70), # Iron platelegs
-	28: Color(0.72, 0.53, 0.22), # Bronze helm
-	29: Color(0.70, 0.70, 0.70), # Iron helm
-	30: Color(0.72, 0.53, 0.22), # Bronze gloves
-	31: Color(0.70, 0.70, 0.70), # Iron gloves
-	32: Color(0.72, 0.53, 0.22), # Bronze boots
-	33: Color(0.70, 0.70, 0.70), # Iron boots
+	22: Color(0.65, 0.65, 0.68), # Steel sword
+	30: Color(0.72, 0.53, 0.22), # Bronze shield
+	31: Color(0.70, 0.70, 0.70), # Iron shield
+	40: Color(0.72, 0.53, 0.22), # Bronze platebody
+	41: Color(0.70, 0.70, 0.70), # Iron platebody
+	50: Color(0.72, 0.53, 0.22), # Bronze platelegs
+	51: Color(0.70, 0.70, 0.70), # Iron platelegs
+	60: Color(0.72, 0.53, 0.22), # Bronze helm
+	61: Color(0.70, 0.70, 0.70), # Iron helm
+	70: Color(0.72, 0.53, 0.22), # Bronze gloves
+	71: Color(0.70, 0.70, 0.70), # Iron gloves
+	80: Color(0.72, 0.53, 0.22), # Bronze boots
+	81: Color(0.70, 0.70, 0.70), # Iron boots
+	90: Color(0.80, 0.30, 0.30), # Amulet of strength
+	91: Color(0.30, 0.50, 0.80), # Amulet of defence
 	10: Color(0.72, 0.53, 0.22), # Bronze axe
 	11: Color(0.70, 0.70, 0.70), # Iron axe
 }

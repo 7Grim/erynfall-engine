@@ -57,6 +57,7 @@ func _ready() -> void:
 	_generate_map()
 	_spawn_trees()
 	_connect_signals()
+	_deferred_connect()  # Phase 4: connect signals that need scripts loaded first
 	print("[Main] Phase 4 initialized - gear, shops, food, gold")
 
 func _bootstrap_scene() -> void:
@@ -357,8 +358,6 @@ func _connect_signals() -> void:
 	network.system_message.connect(_on_system_message)
 	network.position_update.connect(_on_position_update)
 	network.inventory_sync.connect(_on_inventory_sync)
-	# Phase 4: inventory equip/use/eat actions
-	inventory_panel.action_requested.connect(_on_inventory_action)
 	network.skill_update.connect(_on_skill_update)
 	network.skills_sync.connect(_on_skills_sync)
 	network.animation.connect(_on_animation)
@@ -368,6 +367,13 @@ func _connect_signals() -> void:
 	network.gold_update.connect(_on_gold_update)
 	network.health_update.connect(_on_health_update)
 	network.shop_open.connect(_on_shop_open)
+
+func _deferred_connect() -> void:
+	# Phase 4: connect signals that require child scripts to be loaded
+	# Must use await because set_script() signals aren't available until
+	# child _ready() runs, which happens after parent _ready() returns
+	await get_tree().process_frame
+	inventory_panel.action_requested.connect(_on_inventory_action)
 	shop_panel.buy_requested.connect(_on_buy_requested)
 	shop_panel.sell_requested.connect(_on_sell_requested)
 

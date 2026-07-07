@@ -8,15 +8,17 @@ const ITEM_NAMES := {
 	4: "Yew logs", 5: "Magic logs",
 	10: "Bronze axe", 11: "Iron axe", 12: "Steel axe",
 	13: "Mithril axe", 14: "Adamant axe", 15: "Rune axe", 16: "Dragon axe",
-	20: "Bronze sword", 21: "Iron sword",
-	22: "Bronze shield", 23: "Iron shield",
-	24: "Bronze platebody", 25: "Iron platebody",
-	26: "Bronze platelegs", 27: "Iron platelegs",
-	28: "Bronze helm", 29: "Iron helm",
-	30: "Bronze gloves", 31: "Iron gloves",
-	32: "Bronze boots", 33: "Iron boots",
-	34: "Cooked shrimp", 35: "Cooked sardine",
-	36: "Bread", 37: "Cooked meat",
+	20: "Bronze sword", 21: "Iron sword", 22: "Steel sword",
+	30: "Bronze shield", 31: "Iron shield",
+	40: "Bronze platebody", 41: "Iron platebody",
+	50: "Bronze platelegs", 51: "Iron platelegs",
+	60: "Bronze helm", 61: "Iron helm",
+	70: "Bronze gloves", 71: "Iron gloves",
+	80: "Bronze boots", 81: "Iron boots",
+	90: "Amulet of strength", 91: "Amulet of defence",
+	110: "Cooked shrimp", 112: "Cooked sardine",
+	113: "Cooked trout", 114: "Cooked salmon",
+	115: "Cooked lobster", 116: "Cooked swordfish",
 	998: "Coins",
 }
 
@@ -36,29 +38,34 @@ const ITEM_COLORS := {
 	16: Color(0.50, 0.15, 0.15), # Dragon axe — red
 	20: Color(0.72, 0.53, 0.22), # Bronze sword
 	21: Color(0.70, 0.70, 0.70), # Iron sword
-	22: Color(0.72, 0.53, 0.22), # Bronze shield
-	23: Color(0.70, 0.70, 0.70), # Iron shield
-	24: Color(0.72, 0.53, 0.22), # Bronze platebody
-	25: Color(0.70, 0.70, 0.70), # Iron platebody
-	26: Color(0.72, 0.53, 0.22), # Bronze platelegs
-	27: Color(0.70, 0.70, 0.70), # Iron platelegs
-	28: Color(0.72, 0.53, 0.22), # Bronze helm
-	29: Color(0.70, 0.70, 0.70), # Iron helm
-	30: Color(0.72, 0.53, 0.22), # Bronze gloves
-	31: Color(0.70, 0.70, 0.70), # Iron gloves
-	32: Color(0.72, 0.53, 0.22), # Bronze boots
-	33: Color(0.70, 0.70, 0.70), # Iron boots
-	34: Color(0.6, 0.8, 0.3),     # Cooked shrimp — green
-	35: Color(0.5, 0.7, 0.4),     # Cooked sardine
-	36: Color(0.7, 0.6, 0.3),     # Bread
-	37: Color(0.6, 0.4, 0.3),     # Cooked meat
+	22: Color(0.65, 0.65, 0.68), # Steel sword
+	30: Color(0.72, 0.53, 0.22), # Bronze shield
+	31: Color(0.70, 0.70, 0.70), # Iron shield
+	40: Color(0.72, 0.53, 0.22), # Bronze platebody
+	41: Color(0.70, 0.70, 0.70), # Iron platebody
+	50: Color(0.72, 0.53, 0.22), # Bronze platelegs
+	51: Color(0.70, 0.70, 0.70), # Iron platelegs
+	60: Color(0.72, 0.53, 0.22), # Bronze helm
+	61: Color(0.70, 0.70, 0.70), # Iron helm
+	70: Color(0.72, 0.53, 0.22), # Bronze gloves
+	71: Color(0.70, 0.70, 0.70), # Iron gloves
+	80: Color(0.72, 0.53, 0.22), # Bronze boots
+	81: Color(0.70, 0.70, 0.70), # Iron boots
+	90: Color(0.80, 0.30, 0.30), # Amulet of strength
+	91: Color(0.30, 0.50, 0.80), # Amulet of defence
+	110: Color(0.6, 0.8, 0.3),     # Cooked shrimp
+	112: Color(0.5, 0.7, 0.4),     # Cooked sardine
+	113: Color(0.55, 0.75, 0.35), # Cooked trout
+	114: Color(0.7, 0.6, 0.3),     # Cooked salmon
+	115: Color(0.6, 0.4, 0.3),     # Cooked lobster
+	116: Color(0.5, 0.35, 0.25),   # Cooked swordfish
 	998: Color(0.85, 0.75, 0.20), # Coins — gold
 }
 
 signal action_requested(action: int, slot: int)  # Phase 4: equip(0)/unequip(1)/use(3)
 
-const FOOD_ITEMS = [34, 35, 36, 37]  # Cooked shrimp, sardine, bread, meat
-const EQUIP_ITEMS = [10, 11, 12, 13, 14, 15, 16, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
+const FOOD_ITEMS = [110, 112, 113, 114, 115, 116]  # Cooked food items
+const EQUIP_ITEMS = [10, 11, 12, 13, 14, 15, 16, 20, 21, 22, 30, 31, 40, 41, 50, 51, 60, 61, 70, 71, 80, 81, 90, 91]
 
 var _slots: Array = []  # Array of Panel nodes
 var _slot_data: Array = []  # Array of {id, qty}
@@ -105,6 +112,25 @@ func _build_slots() -> void:
 		_slots.append(slot_panel)
 		_slot_data.append({"id": 0, "qty": 0})
 		grid.add_child(slot_panel)
+		
+		# Phase 4: click handling — left click uses/eats, right click equips
+		var idx = i
+		slot_panel.gui_input.connect(func(event: InputEvent) -> void:
+			if event is InputEventMouseButton and event.pressed:
+				var data = _slot_data[idx]
+				if data.id == 0:
+					return
+				if event.button_index == MOUSE_BUTTON_LEFT:
+					if data.id in FOOD_ITEMS:
+						action_requested.emit(3, idx)
+					elif data.id in EQUIP_ITEMS:
+						action_requested.emit(0, idx)
+				elif event.button_index == MOUSE_BUTTON_RIGHT:
+					if data.id in EQUIP_ITEMS:
+						action_requested.emit(1, idx)
+					elif data.id in FOOD_ITEMS:
+						action_requested.emit(3, idx)
+		)
 	
 	# Style the main panel
 	add_theme_stylebox_override("panel", _create_bg_style())
